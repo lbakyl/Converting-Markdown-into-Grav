@@ -1,0 +1,9 @@
+{
+  "id": "commit-and-publish",
+  "name": "Commit and Publish",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Adds a 'Commit and Publish' command: triggers Obsidian Git's commit, then runs publish_vault.py (image resize/rename + push to Gitea) once the commit actually finishes.",
+  "author": "Jan Bachelor",
+  "isDesktopOnly": true
+}
