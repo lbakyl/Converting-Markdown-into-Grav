@@ -115,6 +115,8 @@ On each run, the script:
 3. Converts each file's content into a Grav page: extracts a title, rewrites Obsidian-style wikilinks and image embeds, copies referenced images alongside the generated page, and writes proper Grav frontmatter.
 4. Removes any page it previously created whose source has since been renamed or deleted, so nothing is ever left behind as a stale duplicate.
 5. Clears Grav's cache so the change is visible immediately.
+6. `Home.md` and `All Articles.md` at the vault root are special-cased to overwrite Grav's own `01.home` and `02.articles` pages directly, rather than becoming ordinary numbered pages.
+7. Re-chowns everything under `user/pages/` to the container's `www-data` UID/GID, since the script itself runs as root and Grav's admin UI needs to be able to edit what it writes.
 
 ## Expected repo layout
 
