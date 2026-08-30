@@ -62,6 +62,7 @@ Everything is a constant near the top of `optimize_images.py`, no config file or
 | `RESIZE_EXTS` | File extensions treated as raster images. `.gif` and `.svg` are deliberately excluded, animated frames and vector data don't resize the same way. |
 | `ASSETS_DIRNAME` | Folder name renamed images get moved into, next to whichever note references them. |
 | `AI_NAMING` | Off by default. Flip to `True` and fill in `ai_name_image()` to use a real vision model for naming instead of the heading-based fallback; the function is stubbed but not wired up to any provider yet. |
+| `WWW_DATA_UID` / `WWW_DATA_GID` | The container's `www-data` UID/GID (`1000`/`33` here, confirmed via `docker exec grav id www-data`). Not necessarily the same on a different setup, check yours before reusing this. |
 
 `publish_vault.py` has one constant of its own worth knowing: the commit message template, `vault backup: <timestamp>`, matching the style Obsidian Git's own auto-commits already use.
 
