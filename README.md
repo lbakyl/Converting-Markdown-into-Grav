@@ -98,6 +98,7 @@ The plugin writes `debug.log` inside its own folder (`.obsidian/plugins/commit-a
 - **`__dirname` isn't reliable inside an Obsidian plugin.** Obsidian loads plugins through its own mechanism, not Node's normal `require()`, and `__dirname` isn't guaranteed to resolve correctly there. Build any in-plugin file paths from `app.vault.adapter.getBasePath()` instead.
 - **Checking only for uncommitted changes isn't enough**, since Obsidian Git's own auto-commit (its auto-push, not auto-commit, is what's disabled) can commit locally before `publish_vault.py` ever runs, leaving nothing for `git add` to pick up despite there being a genuinely unpushed commit sitting there. `publish_vault.py` checks `git rev-list @{u}..HEAD --count` as a separate condition and pushes if either that or the ordinary uncommitted-changes check comes back true.
 - **Renaming applies retroactively to every image, including ones already live and published**, not just newly added ones. That was a deliberate choice for this vault (a consistently-named `assets/` folder mattered more than preserving old URLs), not an inherent requirement, gate the rename on the filename still looking auto-generated if you'd rather it only apply going forward.
+- `Home.md` and `All Articles.md` are reserved filenames at the vault root, using either for an ordinary article would get it silently redirected into Grav's homepage or articles page instead of becoming its own page.
 
 ---
 
