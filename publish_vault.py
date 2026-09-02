@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Run this yourself whenever you want to publish: resizes/renames images
-(see optimize_images.py for that half), then commits and pushes, all in
+(see optimize_images.py), strips stray leading whitespace from fenced
+code blocks (see clean_code_fences.py), then commits and pushes, all in
 one pass, the same pattern as the sibling Notion -> Gitea backup script.
 Meant to be run on demand, not on any timer.
 
@@ -34,6 +35,7 @@ import subprocess
 from datetime import datetime
 
 from optimize_images import process_vault, VAULT_ROOT
+from clean_code_fences import clean_vault
 
 
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -65,6 +67,9 @@ def has_unpushed_commits() -> bool:
 def main() -> int:
     print("== optimizing images ==")
     process_vault(VAULT_ROOT)
+
+    print("\n== cleaning stray code-block indentation ==")
+    clean_vault(VAULT_ROOT)
 
     if not has_uncommitted_changes() and not has_unpushed_commits():
         print("\nNothing to commit or push.")

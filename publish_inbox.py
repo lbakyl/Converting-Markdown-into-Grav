@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SERVER SIDE: Pulls the curated Obsidian "Published" content from an isolated git clone
+Pulls the curated Obsidian "Published" content from an isolated git clone
 (NOT inside Grav's user/ tree - deliberately separate after Git Sync's
 bidirectional sync destroyed the live pages/ folder twice) and converts it
 into real Grav pages under user/pages/.
@@ -13,7 +13,10 @@ folder - no extra nesting subfolder needed):
     parts are ordered by a leading "Part N" in the filename if present,
     otherwise alphabetically. Any image files anywhere in a series' folder
     tree (e.g. an "Attachments" subfolder) are available to every part in
-    that series.
+    that series. A subfolder with exactly one .md part is collapsed to a
+    direct single page instead (no index + one-item "Parts in this
+    series" list), using the FOLDER's own slug so the URL stays the same
+    whether or not that folder happens to hold one part or several.
 
 - Title: first '# Heading' line in the file (stripped from the body after),
   ignoring any that fall inside a fenced ``` code block (e.g. a numbered
@@ -48,10 +51,29 @@ folder - no extra nesting subfolder needed):
   01.home if Home.md is actually present in a given run; never deletes or
   resets that page if the note is removed, since automatically wiping
   Grav's own default page unattended is too risky.
-- All Articles.md at the vault root is the same idea, for 02.articles.
-  Only ever writes that page's title and intro text though - the actual
-  article listing there is generated live by a custom Twig template, not
-  stored as page content anywhere, so there's nothing else to sync.
+- Search Articles.md at the vault root is the same idea, for 02.search
+  (formerly "All Articles.md" / 02.articles, renamed when the site got a
+  proper categorized blog homepage - see below). Only ever writes that
+  page's title and intro text though - the actual article listing there
+  is generated live by a custom Twig template, not stored as page content
+  anywhere, so there's nothing else to sync.
+- About.md at the vault root is the same idea again, for 03.about - the
+  "About Jan" bio content, split out of Home.md once Home.md's own page
+  became the blog homepage instead (see below) and needed the space back.
+- Optional YAML frontmatter at the very top of any article (single file or
+  series part): `category: Name` and `tags: [a, b]` (or a `- ` block).
+  Parsed by extract_frontmatter() and stripped before title extraction, fed
+  into that page's Grav `taxonomy:` frontmatter. Powers the category filter
+  on the new blog homepage. A series takes its category/tags from whichever
+  part defines them first (part order), since the series is represented as
+  one card there, not one per part. Entirely optional - an article with no
+  frontmatter block just has no category/tags, no error.
+- Home.md's page (01.home) is now the blog homepage: forced `template: blog`,
+  rendered by blog.html.twig, which walks the same top-level page tree as
+  the search page but groups entries by their `taxonomy.category`. Home.md
+  itself only ever supplies that page's title and any intro text above the
+  listing (same relationship All Articles.md/Search Articles.md always had
+  to its own listing).
 - Ownership: this script runs as root (via the systemd service), so
   anything it writes is root-owned by default. Grav's own admin UI edits
   and deletes pages as the container's www-data user, a different UID,
@@ -107,20 +129,24 @@ def image_height(path: Path) -> int | None:
 SOURCE_REPO = Path("/opt/grav_source/repo")
 PAGES_DIR = Path("/opt/grav/user/pages")
 MANIFEST_PATH = Path("/opt/grav/.publish_manifest.json")
-START_INDEX = 10  # leaves 01/02 free for Grav's own default pages
-RESERVED_SLUGS = {"home", "typography"}
+START_INDEX = 10  # leaves 01/02/03 free for Grav's own default pages
+RESERVED_SLUGS = {"home", "typography", "search", "about"}
 IGNORED_TOP_LEVEL = {".git", ".gitignore", ".htaccess"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 HOME_FILENAME = "Home.md"  # special-cased below: overwrites Grav's own
 # 01.home/default.md directly, instead of becoming a numbered page like
 # every other standalone article. Excluded from single_files entirely so
 # it's never *also* generated as a separate "home-post" page.
-ARTICLES_FILENAME = "All Articles.md"  # same idea as HOME_FILENAME, for
-# 02.articles/default.md. Only ever controls that page's title and intro
-# text though - the actual article listing is generated live by a custom
-# Twig template (articles.html.twig, not part of this pipeline at all),
-# walking Grav's page tree directly, so there's no listing content here
-# to sync in the first place.
+SEARCH_FILENAME = "Search Articles.md"  # same idea as HOME_FILENAME, for
+# 02.search/default.md (formerly "All Articles.md" / 02.articles). Only
+# ever controls that page's title and intro text though - the actual
+# article listing is generated live by a custom Twig template
+# (articles.html.twig, not part of this pipeline at all), walking Grav's
+# page tree directly, so there's no listing content here to sync in the
+# first place.
+ABOUT_FILENAME = "About.md"  # same idea again, for 03.about/default.md -
+# the "About Jan" bio content, split out of Home.md once that page became
+# the blog homepage.
 WWW_DATA_UID = 1000  # the grav container's www-data user, confirmed with
 # `docker exec grav id www-data` - not necessarily 1000 on a different
 # setup, check yours before reusing this. Files this script writes need
@@ -147,8 +173,68 @@ IMAGE_REF_RE = re.compile(
     r"|!\[([^\]]*)\]\(([^)\s]+\.(?:png|jpe?g|gif|webp|svg))(?:\s+\"[^\"]*\")?\)",
     re.IGNORECASE,
 )
+# Raw HTML <img> tags, optionally wrapped in a same-target <a> and/or a <p>
+# (the shape the sibling Notion-to-Gitea backup script emits for every image
+# it downloads: <p align="center"><a href="assets/x.png" target="_blank">
+# <img src="assets/x.png" alt="..." width="300" /></a></p>). Never matched by
+# IMAGE_REF_RE above, which only understands Markdown image syntax, so content
+# authored as HTML (Notion imports, or anything else that writes raw <img>
+# tags) was left completely untouched: its original "assets/..." src pointed
+# at a folder that doesn't exist next to the flat page Grav generates, and
+# the file itself was never copied there either.
+#
+# The fix converts each one into plain Markdown image syntax and lets it flow
+# through the exact same IMAGE_REF_RE / image_repl() path as every other
+# image on the site, rather than hand-copying the file and patching the raw
+# HTML's src/href in place. That was tried first and still 404'd: a bare
+# relative src/href in raw HTML is resolved by the *browser's* normal URL
+# rules, which drop the current page's last path segment - fine for a page
+# with a single-segment route, wrong (one directory too shallow) for a
+# nested series/part page, e.g. /a/b vs /a/b/b. Grav's own Markdown image
+# handling resolves the file against the page's actual route instead of the
+# browser's URL, however deep the nesting, which is why every other image on
+# the site (all Markdown-authored) already works correctly.
+HTML_IMG_RE = re.compile(
+    r"(?:<p[^>]*>\s*)?"
+    r"(?:<a\s+[^>]*href=\"[^\"]*\"[^>]*>\s*)?"
+    r"(<img\s+[^>]*/?>)"
+    r"(?:\s*</a>)?"
+    r"(?:\s*</p>)?",
+    re.IGNORECASE,
+)
+IMG_SRC_RE = re.compile(r'src="([^"]+)"', re.IGNORECASE)
+IMG_ALT_RE = re.compile(r'alt="([^"]*)"', re.IGNORECASE)
 WIKILINK_RE = re.compile(r"(?<!!)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 PART_NUM_RE = re.compile(r"part\s*(\d+)", re.IGNORECASE)
+# Obsidian's callout syntax: the opening line of a blockquote reads
+# "> [!type] optional title" (optionally followed directly by a fold
+# indicator, - or +, which Grav has no collapse behavior for and which this
+# just discards). The site has the github-markdown-alerts Grav plugin
+# installed, which recognizes GitHub's own near-identical convention instead
+# ("> [!NOTE]" etc., exactly five fixed types, no inline title) and renders
+# it as a real titled, colored box - confirmed directly against the live
+# Parsedown instance: a plain blockquote (this) renders its Markdown body
+# (lists, bold, links) completely normally, but a <div> wrapper does not,
+# Parsedown treats it as one opaque raw-HTML block and never re-enters
+# Markdown mode for what's inside, even across blank lines. So rather than
+# building a styled box by hand, this just rewrites the opening line into
+# GitHub's syntax and lets that plugin do the actual rendering: only the
+# marker line changes (mapped to the closest of GitHub's 5 types, any
+# custom title demoted to a bold first line of the body, since GitHub's
+# syntax has no title slot of its own), every following ">"-prefixed body
+# line is left completely untouched.
+CALLOUT_OPEN_RE = re.compile(r"^>[ \t]*\[!(\w+)\][-+]?[ \t]*(.*)$", re.MULTILINE)
+CALLOUT_TYPE_MAP = {
+    # Obsidian type -> nearest of the plugin's 5 GitHub-alert types.
+    "note": "NOTE", "info": "NOTE", "abstract": "NOTE", "summary": "NOTE",
+    "tldr": "NOTE", "todo": "NOTE", "example": "NOTE", "quote": "NOTE", "cite": "NOTE",
+    "tip": "TIP", "hint": "TIP", "success": "TIP", "check": "TIP", "done": "TIP",
+    "important": "IMPORTANT",
+    "warning": "WARNING", "caution": "WARNING", "attention": "WARNING",
+    "question": "WARNING", "help": "WARNING", "faq": "WARNING",
+    "danger": "CAUTION", "error": "CAUTION", "bug": "CAUTION",
+    "failure": "CAUTION", "fail": "CAUTION", "missing": "CAUTION",
+}
 
 
 def slugify(name: str) -> str:
@@ -193,6 +279,41 @@ def extract_title(content: str, fallback: str) -> tuple[str, str]:
     return title, body.lstrip("\n")
 
 
+FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?\n)---[ \t]*\n", re.DOTALL)
+FRONTMATTER_CATEGORY_RE = re.compile(r"^category:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+FRONTMATTER_TAGS_INLINE_RE = re.compile(r"^tags:[ \t]*\[(.*?)\][ \t]*$", re.MULTILINE)
+FRONTMATTER_TAGS_BLOCK_RE = re.compile(r"^tags:[ \t]*\n((?:[ \t]*-.*\n?)+)", re.MULTILINE)
+FRONTMATTER_LIST_ITEM_RE = re.compile(r"^[ \t]*-[ \t]*(.+)$", re.MULTILINE)
+
+
+def extract_frontmatter(content: str) -> tuple[dict, str]:
+    """Optional YAML frontmatter at the very top of an Obsidian note (added
+    through Obsidian's own Properties panel), used for exactly two fields
+    this pipeline understands: `category` (one string) and `tags` (a list,
+    either inline `[a, b]` or a `- ` block). A minimal hand-rolled parser
+    rather than a real YAML library, this script has no third-party
+    dependencies and these two fields don't justify pulling one in.
+    Anything else in the block (Obsidian's own `aliases`, etc.) is
+    silently ignored. No block present -> ({}, content) unchanged, this is
+    entirely optional per article."""
+    m = FRONTMATTER_RE.match(content)
+    if not m:
+        return {}, content
+    block = m.group(1)
+    meta: dict = {}
+    cat_m = FRONTMATTER_CATEGORY_RE.search(block)
+    if cat_m:
+        meta["category"] = cat_m.group(1).strip("'\" \t")
+    inline_m = FRONTMATTER_TAGS_INLINE_RE.search(block)
+    if inline_m:
+        meta["tags"] = [t.strip().strip("'\"") for t in inline_m.group(1).split(",") if t.strip()]
+    else:
+        block_m = FRONTMATTER_TAGS_BLOCK_RE.search(block)
+        if block_m:
+            meta["tags"] = [t.strip().strip("'\"") for t in FRONTMATTER_LIST_ITEM_RE.findall(block_m.group(1))]
+    return meta, content[m.end():]
+
+
 def part_sort_key(filename: str):
     m = PART_NUM_RE.search(filename)
     return (0, int(m.group(1))) if m else (1, filename.lower())
@@ -234,6 +355,20 @@ def process_body(text: str, slug_map: dict, image_map: dict, dest_folder: Path) 
 
     text = INLINE_CODE_RE.sub(stash_inline_code, text)
 
+    def callout_open_repl(m: re.Match) -> str:
+        gfm_type = CALLOUT_TYPE_MAP.get(m.group(1).lower(), "NOTE")
+        title = m.group(2).strip()
+        line = f"> [!{gfm_type}]"
+        if title:
+            # GitHub's alert syntax has no title slot of its own (always
+            # shows the fixed type name, "Note"/"Warning"/etc.) - an
+            # Obsidian custom title becomes a bold first line of the body
+            # instead, on its own quoted line, rather than being dropped.
+            line += f"\n> **{title}**"
+        return line
+
+    text = CALLOUT_OPEN_RE.sub(callout_open_repl, text)
+
     def image_repl(m: re.Match) -> str:
         # Group 1 = Obsidian bracket embed (![[name]]); groups 2/3 = standard
         # markdown image (![alt](path/name.ext)). Either way, resolve by
@@ -264,6 +399,24 @@ def process_body(text: str, slug_map: dict, image_map: dict, dest_folder: Path) 
         # full original size on click, without constraining anything.
         return f"![{alt}]({quote(src.name)}?classes={css_class}&lightbox=3000,3000)"
 
+    def html_img_to_markdown(m: re.Match) -> str:
+        # Rewrite a raw HTML <img> (optionally wrapped in <p>/<a>, matched as
+        # a whole unit by HTML_IMG_RE) into plain Markdown image syntax, alt
+        # text and all, discarding the <p>/<a> wrapper entirely. This runs
+        # BEFORE IMAGE_REF_RE below, so the Markdown it produces here falls
+        # straight through the exact same filename-resolution, copy, and
+        # classes/lightbox-querystring logic as every other image on the
+        # site, rather than duplicating that logic against a src attribute
+        # the browser (not Grav) would end up resolving.
+        img_tag = m.group(1)
+        src_match = IMG_SRC_RE.search(img_tag)
+        if not src_match:
+            return m.group(0)
+        alt_match = IMG_ALT_RE.search(img_tag)
+        alt = alt_match.group(1) if alt_match else ""
+        return f"![{alt}]({src_match.group(1)})"
+
+    text = HTML_IMG_RE.sub(html_img_to_markdown, text)
     text = IMAGE_REF_RE.sub(image_repl, text)
 
     def link_repl(m: re.Match) -> str:
@@ -285,11 +438,14 @@ def process_home_page(all_titles: dict) -> None:
     01.home/default.md directly (see the module docstring for why).
     Deliberately a no-op, not a deletion, if Home.md is missing - never
     resets Grav's own default page unattended just because its source
-    note isn't in this particular pull."""
+    note isn't in this particular pull. Forced to template: blog - this
+    page is the categorized blog homepage (blog.html.twig), Home.md only
+    ever supplies its title and any intro text above the listing."""
     home_path = SOURCE_REPO / HOME_FILENAME
     if not home_path.exists():
         return
     raw = home_path.read_text(encoding="utf-8")
+    meta, raw = extract_frontmatter(raw)
     title, body = extract_title(raw, fallback="Home")
     home_folder = PAGES_DIR / "01.home"
     home_folder.mkdir(parents=True, exist_ok=True)
@@ -297,27 +453,28 @@ def process_home_page(all_titles: dict) -> None:
     body = process_body(body, all_titles, images, home_folder)
     date = first_commit_date(home_path)
     (home_folder / "default.md").write_text(
-        frontmatter(title, date) + body, encoding="utf-8")
+        frontmatter(title, date, template="blog") + body, encoding="utf-8")
     print(f"  wrote 01.home/default.md  <-  {home_path.name}")
 
 
-def process_articles_page(all_titles: dict) -> None:
-    """All Articles.md at the vault root, if present, overwrites Grav's
-    own 02.articles/default.md title and intro directly (see the module
+def process_search_page(all_titles: dict) -> None:
+    """Search Articles.md at the vault root, if present, overwrites Grav's
+    own 02.search/default.md title and intro directly (see the module
     docstring for why this doesn't cover the actual listing). Deliberately
     preserves the menu/template frontmatter fields that page needs to keep
     working - the generic frontmatter() helper doesn't know about those,
     it's built for ordinary pages. Same no-op-if-absent safety as
     process_home_page()."""
-    articles_path = SOURCE_REPO / ARTICLES_FILENAME
-    if not articles_path.exists():
+    search_path = SOURCE_REPO / SEARCH_FILENAME
+    if not search_path.exists():
         return
-    raw = articles_path.read_text(encoding="utf-8")
-    title, body = extract_title(raw, fallback="All Articles")
-    articles_folder = PAGES_DIR / "02.articles"
-    articles_folder.mkdir(parents=True, exist_ok=True)
-    images = find_images(articles_path.parent)
-    body = process_body(body, all_titles, images, articles_folder).strip()
+    raw = search_path.read_text(encoding="utf-8")
+    meta, raw = extract_frontmatter(raw)
+    title, body = extract_title(raw, fallback="Search Articles")
+    search_folder = PAGES_DIR / "02.search"
+    search_folder.mkdir(parents=True, exist_ok=True)
+    images = find_images(search_path.parent)
+    body = process_body(body, all_titles, images, search_folder).strip()
     safe_title = title.replace("'", "''")
     content = (
         "---\n"
@@ -327,8 +484,32 @@ def process_articles_page(all_titles: dict) -> None:
         "---\n\n"
         f"{body}\n"
     )
-    (articles_folder / "default.md").write_text(content, encoding="utf-8")
-    print(f"  wrote 02.articles/default.md  <-  {articles_path.name}")
+    (search_folder / "default.md").write_text(content, encoding="utf-8")
+    print(f"  wrote 02.search/default.md  <-  {search_path.name}")
+
+
+def process_about_page(all_titles: dict) -> None:
+    """About.md at the vault root, if present, overwrites Grav's own
+    03.about/default.md directly - same special-casing idea as Home.md and
+    Search Articles.md, for the same reason (a note called "About" would
+    otherwise just become an ordinary numbered article via RESERVED_SLUGS'
+    -post rename). This is the "About Jan" bio content, split out of
+    Home.md once that page became the blog homepage instead. Same
+    no-op-if-absent safety as the other two special pages."""
+    about_path = SOURCE_REPO / ABOUT_FILENAME
+    if not about_path.exists():
+        return
+    raw = about_path.read_text(encoding="utf-8")
+    meta, raw = extract_frontmatter(raw)
+    title, body = extract_title(raw, fallback="About Jan")
+    about_folder = PAGES_DIR / "03.about"
+    about_folder.mkdir(parents=True, exist_ok=True)
+    images = find_images(about_path.parent)
+    body = process_body(body, all_titles, images, about_folder)
+    date = first_commit_date(about_path)
+    (about_folder / "default.md").write_text(
+        frontmatter(title, date) + body, encoding="utf-8")
+    print(f"  wrote 03.about/default.md  <-  {about_path.name}")
 
 
 def fix_ownership() -> None:
@@ -360,17 +541,54 @@ def save_manifest(manifest: dict) -> None:
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, sort_keys=True))
 
 
-def frontmatter(title: str, date: str) -> str:
-    safe_title = title.replace("'", "''")
-    return (
-        "---\n"
-        f"title: '{safe_title}'\n"
-        f"date: '{date}'\n"
-        "visible: true\n"
-        "process:\n"
-        "    twig: false\n"
-        "---\n\n"
-    )
+def write_markdown_download(folder: Path, slug: str, title: str, raw_body: str) -> None:
+    """A plain, portable copy of the article for the "Download Markdown" link
+    in the theme (see partials/page.html.twig): the *original* markdown, the
+    same raw_body process_body() is about to transform, not its Grav-shortcode
+    output - a visitor downloading this wants something they could drop into
+    another Obsidian vault or view on GitHub, not Grav's ?classes=/lightbox=
+    querystrings or [mermaid]...[/mermaid] shortcodes. Written into the page's
+    own folder, same as every copied image, so it's cleaned up automatically
+    whenever that folder is (a renamed or removed article, a stale part),
+    nothing about it tracked separately.
+
+    Written with a .txt extension, not .md, on purpose: confirmed directly
+    against the live site that Grav refuses to serve a bare .md file sitting
+    in a page folder as a static download (its own content-file extension,
+    presumably blocked deliberately) even though the exact same bytes as
+    .txt come back 200 - the theme's download link instead points at this
+    .txt file but sets the HTML `download="<slug>.md"` attribute, which
+    controls only what the browser *saves it locally as*, independent of the
+    actual URL/extension it was served from."""
+    (folder / f"{slug}.txt").write_text(f"# {title}\n\n{raw_body}", encoding="utf-8")
+
+
+def yaml_quote(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def frontmatter(
+    title: str, date: str, *, template: str | None = None,
+    category: str | None = None, tags: list[str] | None = None,
+) -> str:
+    """Builds the frontmatter block for an ordinary generated page. category
+    and tags (both optional, from extract_frontmatter() above) become a
+    Grav `taxonomy:` block, the whole basis for the category filter and tag
+    pills on the blog homepage (see blog.html.twig) - omitted entirely if
+    neither is set, so an untagged article just has no taxonomy at all
+    rather than an empty block. template (also optional) forces the page's
+    rendering template, used only for 01.home (-> blog.html.twig)."""
+    lines = ["---", f"title: {yaml_quote(title)}", f"date: '{date}'", "visible: true"]
+    if template:
+        lines.append(f"template: {template}")
+    if category or tags:
+        lines.append("taxonomy:")
+        if category:
+            lines.append(f"    category: [{yaml_quote(category)}]")
+        if tags:
+            lines.append(f"    tag: [{', '.join(yaml_quote(t) for t in tags)}]")
+    lines += ["process:", "    twig: false", "---", ""]
+    return "\n".join(lines) + "\n"
 
 
 def main() -> None:
@@ -382,7 +600,8 @@ def main() -> None:
 
     single_files = sorted(
         p for p in SOURCE_REPO.glob("*.md")
-        if p.name not in IGNORED_TOP_LEVEL and p.name not in (HOME_FILENAME, ARTICLES_FILENAME)
+        if p.name not in IGNORED_TOP_LEVEL
+        and p.name not in (HOME_FILENAME, SEARCH_FILENAME, ABOUT_FILENAME)
     )
     series_dirs = sorted(
         p for p in SOURCE_REPO.iterdir()
@@ -394,6 +613,7 @@ def main() -> None:
 
     for f in single_files:
         raw = f.read_text(encoding="utf-8")
+        meta, raw = extract_frontmatter(raw)
         title, body = extract_title(raw, fallback=f.stem)
         slug = slugify(title)
         all_titles[title.lower()] = slug
@@ -401,6 +621,7 @@ def main() -> None:
             "kind": "single", "title": title, "slug": slug,
             "date": first_commit_date(f), "body": body, "source": f.name,
             "images": find_images(f.parent),
+            "category": meta.get("category"), "tags": meta.get("tags"),
         })
 
     for d in series_dirs:
@@ -416,24 +637,62 @@ def main() -> None:
         parsed_parts = []
         for p in parts:
             raw = p.read_text(encoding="utf-8")
+            meta, raw = extract_frontmatter(raw)
             title, body = extract_title(raw, fallback=p.stem)
             slug = slugify(title)
             all_titles[title.lower()] = slug
             parsed_parts.append({
                 "title": title, "slug": slug, "body": body,
                 "date": first_commit_date(p), "source": p.name,
+                "category": meta.get("category"), "tags": meta.get("tags"),
             })
+        if len(parsed_parts) == 1:
+            # A "series" folder with exactly one real part is really just a
+            # single article that happens to sit in its own subfolder (the
+            # common shape for a one-off tutorial with an assets/ folder
+            # next to it) - collapse it to a direct page instead of an
+            # index page + one-item "Parts in this series" list, which was
+            # just an extra, pointless click to reach the only real
+            # content. The top-level slug is deliberately kept as the
+            # FOLDER's own slug (slugify(d.name)), not the part's own
+            # title-derived slug (usually close but not always identical,
+            # e.g. singular/plural wording) - this is what keeps the
+            # resulting URL identical to what a still-nested version of
+            # this same folder would have had, so collapsing an existing
+            # single-part series never changes a URL that might already be
+            # shared/bookmarked.
+            only = parsed_parts[0]
+            folder_slug = slugify(d.name)
+            all_titles[only["title"].lower()] = folder_slug  # overwrite: it
+            # now lives at the folder's slug, not its own title-derived one
+            # (set above, in the parts loop) - any wikilink elsewhere in
+            # this batch pointing at this title must resolve here instead.
+            top_entries.append({
+                "kind": "single", "title": only["title"], "slug": folder_slug,
+                "date": only["date"], "body": only["body"], "source": f"{d.name}/{only['source']}",
+                "images": series_images,
+                "category": only.get("category"), "tags": only.get("tags"),
+            })
+            continue
+
         series_date = min(pp["date"] for pp in parsed_parts)
+        # The series as a whole is shown as one card on the blog homepage,
+        # not one per part, so it needs one category/tag set - taken from
+        # whichever part defines it first, in part order (typically Part 1).
+        series_category = next((pp["category"] for pp in parsed_parts if pp.get("category")), None)
+        series_tags = next((pp["tags"] for pp in parsed_parts if pp.get("tags")), None)
         top_entries.append({
             "kind": "series", "title": d.name, "slug": slugify(d.name),
             "date": series_date, "parts": parsed_parts, "source": d.name,
             "images": series_images,
+            "category": series_category, "tags": series_tags,
         })
 
     top_entries.sort(key=lambda e: e["date"], reverse=True)
 
     process_home_page(all_titles)
-    process_articles_page(all_titles)
+    process_search_page(all_titles)
+    process_about_page(all_titles)
 
     manifest = load_manifest()
     new_manifest = {}
@@ -450,15 +709,27 @@ def main() -> None:
         folder_path.mkdir(parents=True, exist_ok=True)
 
         if e["kind"] == "single":
+            # A genuine always-single article never has subdirectories of
+            # its own - only a folder that used to be a (now-collapsed,
+            # see above) multi/single-part series does, left over from
+            # when it still had a nested part folder. Clean that up here
+            # so it doesn't linger as an orphan alongside the new flat
+            # default.md; a no-op for every ordinary single-file article.
+            for child in folder_path.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+                    print(f"  removed stale nested folder {folder_name}/{child.name} (series collapsed to a single page)")
             body = process_body(e["body"], all_titles, e["images"], folder_path)
             (folder_path / "default.md").write_text(
-                frontmatter(e["title"], e["date"]) + body, encoding="utf-8")
+                frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags")) + body,
+                encoding="utf-8")
+            write_markdown_download(folder_path, e["slug"], e["title"], e["body"])
             new_manifest[e["slug"]] = {"folder": folder_name, "source": e["source"]}
             print(f"  wrote {folder_name}/default.md  <-  {e['source']}")
         else:
             index_body = "\n".join(f"- [{p['title']}]({p['slug']})" for p in e["parts"])
             (folder_path / "default.md").write_text(
-                frontmatter(e["title"], e["date"])
+                frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags"))
                 + "Parts in this series:\n\n" + index_body + "\n",
                 encoding="utf-8",
             )
@@ -470,7 +741,9 @@ def main() -> None:
                 part_folder.mkdir(parents=True, exist_ok=True)
                 body = process_body(p["body"], all_titles, e["images"], part_folder)
                 (part_folder / "default.md").write_text(
-                    frontmatter(p["title"], p["date"]) + body, encoding="utf-8")
+                    frontmatter(p["title"], p["date"], category=p.get("category"), tags=p.get("tags")) + body,
+                    encoding="utf-8")
+                write_markdown_download(part_folder, p["slug"], p["title"], p["body"])
                 print(f"  wrote {folder_name}/{part_folder.name}/default.md  <-  {e['source']}/{p['source']}")
 
             # A part whose title (and therefore slug/folder name) changed

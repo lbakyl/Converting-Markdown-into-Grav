@@ -4,6 +4,8 @@ Publishes curated Markdown notes from an Obsidian vault to a live [Grav CMS](htt
 
 It exists because Grav's own official plugin for this, **Git Sync**, turned out to be unreliable enough (a corrupting admin UI, and twice deleting the entire live `pages/` directory) that it got fully uninstalled and replaced with the two scripts documented here instead. Full write-up, including why Git Sync was dropped, the deploy key setup, and every gotcha hit along the way, is in Parts 2 and 3 of the ["Self-host Obsidian and publish tutorials via an automated pipeline to Grav CMS"](https://tutorials.bachelor-tech.com) series.
 
+See [CHANGELOG.md](CHANGELOG.md) for what's changed release to release.
+
 ## How it fits together
 
 ```mermaid
@@ -33,7 +35,8 @@ They exist because Obsidian Git's own commits don't invoke local git hooks (conf
 ## What each piece does
 
 - **`optimize_images.py`**: scans the vault for images and, for each one, downscales it if it's wider than a set maximum, and renames it to a consistent, SEO-friendly filename based on the nearest heading above it. Importable, no side effects of its own beyond the file operations, so it can be run standalone (`python optimize_images.py`) or called from another script.
-- **`publish_vault.py`**: calls `optimize_images.py`, then commits and pushes whatever changed, using `git` directly rather than any Obsidian plugin. Meant to be run whenever you're ready to publish, not on a schedule.
+- **`clean_code_fences.py`**: strips a stray leading space or tab from a fenced code block's first line, but only when every other line in that same block has none, conservative on purpose, so a genuinely, consistently indented real code sample (YAML, Python, etc.) is never touched. Also importable and side-effect-free beyond the file edits.
+- **`publish_vault.py`**: calls `optimize_images.py`, then `clean_code_fences.py`, then commits and pushes whatever changed, using `git` directly rather than any Obsidian plugin. Meant to be run whenever you're ready to publish, not on a schedule.
 - **The `Commit and Publish` Obsidian plugin** (`manifest.json` + `main.js`): adds one command to Obsidian's command palette that runs `publish_vault.py` in the background (no console window) and shows a short result notification, so the whole thing is a single keypress once a hotkey is set for it.
 
 ## How images get renamed
@@ -98,7 +101,7 @@ The plugin writes `debug.log` inside its own folder (`.obsidian/plugins/commit-a
 - **`__dirname` isn't reliable inside an Obsidian plugin.** Obsidian loads plugins through its own mechanism, not Node's normal `require()`, and `__dirname` isn't guaranteed to resolve correctly there. Build any in-plugin file paths from `app.vault.adapter.getBasePath()` instead.
 - **Checking only for uncommitted changes isn't enough**, since Obsidian Git's own auto-commit (its auto-push, not auto-commit, is what's disabled) can commit locally before `publish_vault.py` ever runs, leaving nothing for `git add` to pick up despite there being a genuinely unpushed commit sitting there. `publish_vault.py` checks `git rev-list @{u}..HEAD --count` as a separate condition and pushes if either that or the ordinary uncommitted-changes check comes back true.
 - **Renaming applies retroactively to every image, including ones already live and published**, not just newly added ones. That was a deliberate choice for this vault (a consistently-named `assets/` folder mattered more than preserving old URLs), not an inherent requirement, gate the rename on the filename still looking auto-generated if you'd rather it only apply going forward.
-- `Home.md` and `All Articles.md` are reserved filenames at the vault root, using either for an ordinary article would get it silently redirected into Grav's homepage or articles page instead of becoming its own page.
+- `Home.md`, `Search Articles.md`, and `About.md` are reserved filenames at the vault root, using any of them for an ordinary article would get it silently redirected into Grav's homepage, search page, or about page instead of becoming its own page.
 
 ---
 
@@ -113,11 +116,11 @@ On each run, the script:
 1. Pulls the latest content from an isolated git clone (kept entirely outside Grav's own `user/` tree, so nothing about it can touch Grav's actual content by accident).
 2. Walks that clone's top level:
    - Loose `.md` files become single, standalone pages.
-   - Subfolders become multi-part series, with each `.md` file inside becoming one part.
-3. Converts each file's content into a Grav page: extracts a title, rewrites Obsidian-style wikilinks and image embeds, copies referenced images alongside the generated page, and writes proper Grav frontmatter.
+   - Subfolders become multi-part series, with each `.md` file inside becoming one part, EXCEPT a folder with exactly one `.md` part, which collapses to a direct single page instead (no index page + one-item "Parts in this series" list). That page's URL still comes from the *folder's* own slug, not the part's title-derived one, so it doesn't matter whether a given folder holds one part or several.
+3. Converts each file's content into a Grav page: extracts a title, optional `category`/`tags` from a YAML frontmatter block at the top of the file (feeds Grav's native taxonomy system, used to group/filter articles on the homepage), rewrites Obsidian-style wikilinks and image embeds, copies referenced images alongside the generated page, and writes proper Grav frontmatter.
 4. Removes any page it previously created whose source has since been renamed or deleted, so nothing is ever left behind as a stale duplicate.
 5. Clears Grav's cache so the change is visible immediately.
-6. `Home.md` and `All Articles.md` at the vault root are special-cased to overwrite Grav's own `01.home` and `02.articles` pages directly, rather than becoming ordinary numbered pages.
+6. `Home.md`, `Search Articles.md`, and `About.md` at the vault root are special-cased to overwrite Grav's own homepage, search page, and about page directly, rather than becoming ordinary numbered pages. `Home.md`'s page is forced to a `blog` template, a categorized card grid driven entirely by each article's `taxonomy.category`, no hardcoded category list anywhere.
 7. Re-chowns everything under `user/pages/` to the container's `www-data` UID/GID, since the script itself runs as root and Grav's admin UI needs to be able to edit what it writes.
 
 ## Expected repo layout
@@ -140,9 +143,13 @@ Parts within a series are ordered by a leading "Part N" in the filename where pr
 
 - **Title**: the first genuine `# Heading` line in the file, stripped from the body afterward. Headings that fall inside a fenced ` ``` ` code block are correctly ignored (a bash comment like `# 1. Do the thing` is never mistaken for the page title). If no real heading exists anywhere, the filename is used instead.
 - **Wikilinks**: `[[Note Name]]` and `[[Note Name|Display text]]` are rewritten to relative Grav links, resolved through a title-to-slug map built once across the entire batch before any page is written, so cross-references between articles in the same run always resolve correctly.
+- **Category and tags**: an optional YAML frontmatter block at the very top of the file, `category: OPNSense` / `tags: [firewall, vlan]`, stripped from the body before title extraction runs and written into that page's Grav `taxonomy:` frontmatter. A series takes its category/tags from whichever part defines them first, in part order.
 - **Images**: both Obsidian's embed syntax (`![[image.png]]`, with an optional `|width` suffix which is dropped) and plain Markdown image syntax (`![alt](path/image.png)`) are rewritten to a normal `![alt](image.png)` reference, resolved by filename regardless of the original path. A URL-encoded path (`%20` for spaces, etc., common when an editor writes standard Markdown syntax for a pasted screenshot) is decoded before that lookup, so it still resolves correctly. The image itself is copied alongside the generated page, and given a lightbox link plus a size class chosen from the image's own pixel height (a short, wide screenshot doesn't end up as a tiny sliver at a fixed width).
+- **Images written as raw HTML** (e.g. `<p align="center"><a href="assets/x.png"><img src="assets/x.png" ...></a></p>`, the shape some import scripts emit instead of Markdown syntax) are converted to plain Markdown image syntax first, then flow through the same resolution/copy/classing logic as the bullet above.
 - **Mermaid diagrams**: a ` ```mermaid ` fenced code block is translated into `[mermaid]...[/mermaid]`, the shortcode expected by Grav's `mermaid-diagrams` plugin, which has no idea what a fenced code block is. This keeps the source Markdown in standard, portable syntax (renders natively in Obsidian and Gitea too) while still producing a real diagram on the published page.
+- **Obsidian callouts** (`> [!info] Title`, `> [!warning]`, etc.) have their opening line rewritten to GitHub's own alert syntax (`> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`, Obsidian's wider vocabulary mapped down to the closest of these five), which Grav's `github-markdown-alerts` plugin renders as a real titled, colored box instead of a plain blockquote with `[!info]` sitting there as literal text. A custom Obsidian title has no equivalent slot in GitHub's syntax, so it becomes a bold first line of the body instead of being dropped.
 - **Fenced code blocks and inline code spans** are protected from all of the rewriting above. Nothing inside a ` ``` ` block or a single-backtick `` `span` `` (a bash comment, a Mermaid subroutine shape like `[[Foo]]`, or a literal `` `[[Note Name]]` `` given as a syntax example) is ever mistaken for real Obsidian syntax.
+- **A plain-text download copy** of each article is written alongside `default.md` (the original markdown, not the shortcode/querystring-processed output), with a `.txt` extension rather than `.md` since Grav refuses to serve a bare `.md` file in a page folder as a static download.
 - **Ordering**: top-level pages (both standalone articles and whole series) are sorted newest first, by each entry's earliest git commit date.
 - **Cleanup**: tracked through a manifest file (see below). Applies both to whole top-level entries and to individual parts inside a series, so a renamed or deleted part never leaves its old folder behind as an orphaned duplicate.
 
@@ -156,7 +163,7 @@ Everything is a constant near the top of the file, no config file or environment
 | `PAGES_DIR` | Grav's `user/pages/` directory, where generated pages are written. |
 | `MANIFEST_PATH` | Where the script records what it has previously created, for cleanup. |
 | `START_INDEX` | First numeric prefix used for generated top-level page folders (default `10`, leaving `01`/`02` free for Grav's own default pages). |
-| `RESERVED_SLUGS` | Slugs the script must never generate, because Grav already uses them (its own default `home`/`typography` pages). A colliding title gets `-post` appended to its slug instead. |
+| `RESERVED_SLUGS` | Slugs the script must never generate, because Grav already uses them (its own default `home`/`typography` pages, plus `search`/`about`, this pipeline's own reserved pages). A colliding title gets `-post` appended to its slug instead. |
 | `IGNORED_TOP_LEVEL` | Entries at the repo root the script skips outright (`.git`, `.gitignore`, `.htaccess`). |
 | `IMAGE_EXTS` | File extensions treated as images when resolving embeds. |
 
@@ -166,6 +173,8 @@ Everything is a constant near the top of the file, no config file or environment
 - `git` on `PATH`, with read access already configured for `SOURCE_REPO` (an SSH deploy key, scoped read-only, is what this is meant to run with, the counterpart to the write-scoped key used on the desktop side above).
 - `docker` on `PATH`, with a running container named `grav`, for the final cache-clear step. This step is best-effort: its output is captured and ignored if it fails, so a missing container doesn't stop the page conversion itself from completing.
 - Grav's [`mermaid-diagrams`](https://github.com/DanielFlaum/grav-plugin-mermaid-diagrams) plugin installed (`bin/gpm install mermaid-diagrams`), if any content uses ` ```mermaid ` fences. Without it, the `[mermaid]...[/mermaid]` shortcode this script produces just renders as literal text, nothing breaks, it simply won't be a diagram.
+- Grav's `github-markdown-alerts` plugin installed, if any content uses Obsidian callouts. Without it, the rewritten `> [!NOTE]`/etc. syntax just renders as an ordinary blockquote with the marker visible as literal text.
+- A `blog` template registered by the active Grav theme (`template: blog` is forced on the homepage page this script writes), and a `category`/`tag` taxonomy configured in `system.yaml` (Grav's own defaults already include both), if you want the categorized-homepage feature. Without a matching template, that one page falls back to Grav's default rendering, everything else this script does is unaffected.
 
 ## Running it
 
