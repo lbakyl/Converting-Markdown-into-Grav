@@ -74,6 +74,18 @@ folder - no extra nesting subfolder needed):
   itself only ever supplies that page's title and any intro text above the
   listing (same relationship All Articles.md/Search Articles.md always had
   to its own listing).
+- Every source file is read with encoding="utf-8-sig", not plain "utf-8",
+  so a leading UTF-8 byte-order-mark (three bytes, EF BB BF) is silently
+  stripped if present, a no-op if it isn't. Without this, a BOM'd file's
+  frontmatter regex never matches (the string starts with U+FEFF, not
+  "-"), so the whole ---...--- block falls through as literal body text
+  instead of being parsed, visibly leaking onto the live page. Confirmed
+  happening for real: some editor/tool in this pipeline's own toolchain
+  (a PowerShell Set-Content/Out-File call defaults to UTF-8 WITH BOM
+  unless told otherwise) had silently BOM'd a couple of vault files during
+  editing. This is a deliberate blanket fix rather than chasing down which
+  tool did it, any future source, including ones outside this project's
+  control, gets the same treatment.
 - Ownership: this script runs as root (via the systemd service), so
   anything it writes is root-owned by default. Grav's own admin UI edits
   and deletes pages as the container's www-data user, a different UID,
@@ -284,18 +296,60 @@ FRONTMATTER_CATEGORY_RE = re.compile(r"^category:[ \t]*(.+?)[ \t]*$", re.MULTILI
 FRONTMATTER_TAGS_INLINE_RE = re.compile(r"^tags:[ \t]*\[(.*?)\][ \t]*$", re.MULTILINE)
 FRONTMATTER_TAGS_BLOCK_RE = re.compile(r"^tags:[ \t]*\n((?:[ \t]*-.*\n?)+)", re.MULTILINE)
 FRONTMATTER_LIST_ITEM_RE = re.compile(r"^[ \t]*-[ \t]*(.+)$", re.MULTILINE)
+FRONTMATTER_DATE_RE = re.compile(r"^date:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+# The Notion-to-Gitea backup script (a separate tool, see Part 3 of the
+# tutorial series) stamps every note it exports with `backed_up:`, when
+# that specific backup run happened, not the article's real publish date,
+# but the closest thing to one already sitting in the note itself for
+# content that was never dated any other way. Used as a fallback below,
+# below an explicit `date:` override (verified against the real publish
+# date where available), above the last resort of this script's own git
+# first-commit-date (which only ever reflects when the file entered THIS
+# pipeline, could be years after the article actually went out).
+FRONTMATTER_BACKED_UP_RE = re.compile(r"^backed_up:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+# A hand-written excerpt for the blog homepage's card, one line, meant to
+# actually describe what the article covers. Exists because Grav's own
+# auto-computed page.summary() grabs the page's *rendered* content by
+# default, and the [TOC] widget renders before any real prose, so its own
+# link text ("Table of Contents Introduction ...") was leaking into every
+# card as the "summary" instead. A hand-written excerpt sidesteps that
+# entirely rather than fighting Grav's summary internals.
+FRONTMATTER_SUMMARY_RE = re.compile(r"^summary:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+
+
+def unquote_yaml_scalar(raw: str) -> str:
+    """Strips a single layer of YAML quoting from a frontmatter value,
+    properly unescaping a single-quoted string's doubled `''` back to `'`
+    (YAML's own escape convention, the same one yaml_quote() below uses
+    when WRITING a value). Without this, a value that's already
+    single-quoted in the source (as this pipeline's own frontmatter()
+    always writes it) got double-escaped on a round trip: read back with
+    the naive .strip("'\" ") this used to do, the `''` inside stayed
+    literal, then got escaped AGAIN into `''''` the next time frontmatter()
+    wrote it out, visibly leaking as a doubled apostrophe on the live page.
+    A bare, unquoted value (or a double-quoted one) is just trimmed, no
+    unescaping needed for what this pipeline ever writes itself."""
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+        return raw[1:-1].replace("''", "'")
+    return raw.strip("'\" \t")
 
 
 def extract_frontmatter(content: str) -> tuple[dict, str]:
     """Optional YAML frontmatter at the very top of an Obsidian note (added
-    through Obsidian's own Properties panel), used for exactly two fields
-    this pipeline understands: `category` (one string) and `tags` (a list,
-    either inline `[a, b]` or a `- ` block). A minimal hand-rolled parser
+    through Obsidian's own Properties panel, or present already on a
+    Notion-imported note), used for a handful of fields this pipeline
+    understands: `category` (one string), `tags` (a list, either inline
+    `[a, b]` or a `- ` block), `summary` (one line, a hand-written excerpt
+    for the blog homepage card), and a page date, `date:` if explicitly
+    set (takes priority, meant for a real, verified publish date), else
+    `backed_up:` if present (a Notion-export timestamp, an imperfect but
+    real proxy already sitting in the note). A minimal hand-rolled parser
     rather than a real YAML library, this script has no third-party
-    dependencies and these two fields don't justify pulling one in.
-    Anything else in the block (Obsidian's own `aliases`, etc.) is
-    silently ignored. No block present -> ({}, content) unchanged, this is
-    entirely optional per article."""
+    dependencies and these fields don't justify pulling one in. Anything
+    else in the block (Obsidian's own `aliases`, Notion's `source`/
+    `notion_id`, etc.) is silently ignored. No block present -> ({},
+    content) unchanged, this is entirely optional per article."""
     m = FRONTMATTER_RE.match(content)
     if not m:
         return {}, content
@@ -303,14 +357,23 @@ def extract_frontmatter(content: str) -> tuple[dict, str]:
     meta: dict = {}
     cat_m = FRONTMATTER_CATEGORY_RE.search(block)
     if cat_m:
-        meta["category"] = cat_m.group(1).strip("'\" \t")
+        meta["category"] = unquote_yaml_scalar(cat_m.group(1))
     inline_m = FRONTMATTER_TAGS_INLINE_RE.search(block)
     if inline_m:
-        meta["tags"] = [t.strip().strip("'\"") for t in inline_m.group(1).split(",") if t.strip()]
+        meta["tags"] = [unquote_yaml_scalar(t) for t in inline_m.group(1).split(",") if t.strip()]
     else:
         block_m = FRONTMATTER_TAGS_BLOCK_RE.search(block)
         if block_m:
-            meta["tags"] = [t.strip().strip("'\"") for t in FRONTMATTER_LIST_ITEM_RE.findall(block_m.group(1))]
+            meta["tags"] = [unquote_yaml_scalar(t) for t in FRONTMATTER_LIST_ITEM_RE.findall(block_m.group(1))]
+    date_m = FRONTMATTER_DATE_RE.search(block)
+    backed_up_m = FRONTMATTER_BACKED_UP_RE.search(block)
+    if date_m:
+        meta["date"] = unquote_yaml_scalar(date_m.group(1))
+    elif backed_up_m:
+        meta["date"] = unquote_yaml_scalar(backed_up_m.group(1))
+    summary_m = FRONTMATTER_SUMMARY_RE.search(block)
+    if summary_m:
+        meta["summary"] = unquote_yaml_scalar(summary_m.group(1))
     return meta, content[m.end():]
 
 
@@ -444,7 +507,7 @@ def process_home_page(all_titles: dict) -> None:
     home_path = SOURCE_REPO / HOME_FILENAME
     if not home_path.exists():
         return
-    raw = home_path.read_text(encoding="utf-8")
+    raw = home_path.read_text(encoding="utf-8-sig")
     meta, raw = extract_frontmatter(raw)
     title, body = extract_title(raw, fallback="Home")
     home_folder = PAGES_DIR / "01.home"
@@ -468,7 +531,7 @@ def process_search_page(all_titles: dict) -> None:
     search_path = SOURCE_REPO / SEARCH_FILENAME
     if not search_path.exists():
         return
-    raw = search_path.read_text(encoding="utf-8")
+    raw = search_path.read_text(encoding="utf-8-sig")
     meta, raw = extract_frontmatter(raw)
     title, body = extract_title(raw, fallback="Search Articles")
     search_folder = PAGES_DIR / "02.search"
@@ -499,7 +562,7 @@ def process_about_page(all_titles: dict) -> None:
     about_path = SOURCE_REPO / ABOUT_FILENAME
     if not about_path.exists():
         return
-    raw = about_path.read_text(encoding="utf-8")
+    raw = about_path.read_text(encoding="utf-8-sig")
     meta, raw = extract_frontmatter(raw)
     title, body = extract_title(raw, fallback="About Jan")
     about_folder = PAGES_DIR / "03.about"
@@ -570,6 +633,7 @@ def yaml_quote(s: str) -> str:
 def frontmatter(
     title: str, date: str, *, template: str | None = None,
     category: str | None = None, tags: list[str] | None = None,
+    summary: str | None = None,
 ) -> str:
     """Builds the frontmatter block for an ordinary generated page. category
     and tags (both optional, from extract_frontmatter() above) become a
@@ -577,10 +641,16 @@ def frontmatter(
     pills on the blog homepage (see blog.html.twig) - omitted entirely if
     neither is set, so an untagged article just has no taxonomy at all
     rather than an empty block. template (also optional) forces the page's
-    rendering template, used only for 01.home (-> blog.html.twig)."""
+    rendering template, used only for 01.home (-> blog.html.twig). summary
+    (also optional) is a hand-written excerpt, written straight through as
+    its own top-level frontmatter field (not Grav's own summary system),
+    read back by blog.html.twig as entry.header.summary - see
+    extract_frontmatter() above for why page.summary() itself isn't used."""
     lines = ["---", f"title: {yaml_quote(title)}", f"date: '{date}'", "visible: true"]
     if template:
         lines.append(f"template: {template}")
+    if summary:
+        lines.append(f"summary: {yaml_quote(summary)}")
     if category or tags:
         lines.append("taxonomy:")
         if category:
@@ -612,16 +682,17 @@ def main() -> None:
     all_titles = {}
 
     for f in single_files:
-        raw = f.read_text(encoding="utf-8")
+        raw = f.read_text(encoding="utf-8-sig")
         meta, raw = extract_frontmatter(raw)
         title, body = extract_title(raw, fallback=f.stem)
         slug = slugify(title)
         all_titles[title.lower()] = slug
         top_entries.append({
             "kind": "single", "title": title, "slug": slug,
-            "date": first_commit_date(f), "body": body, "source": f.name,
+            "date": meta.get("date") or first_commit_date(f), "body": body, "source": f.name,
             "images": find_images(f.parent),
             "category": meta.get("category"), "tags": meta.get("tags"),
+            "summary": meta.get("summary"),
         })
 
     for d in series_dirs:
@@ -636,15 +707,16 @@ def main() -> None:
         series_images = find_images(d)
         parsed_parts = []
         for p in parts:
-            raw = p.read_text(encoding="utf-8")
+            raw = p.read_text(encoding="utf-8-sig")
             meta, raw = extract_frontmatter(raw)
             title, body = extract_title(raw, fallback=p.stem)
             slug = slugify(title)
             all_titles[title.lower()] = slug
             parsed_parts.append({
                 "title": title, "slug": slug, "body": body,
-                "date": first_commit_date(p), "source": p.name,
+                "date": meta.get("date") or first_commit_date(p), "source": p.name,
                 "category": meta.get("category"), "tags": meta.get("tags"),
+                "summary": meta.get("summary"),
             })
         if len(parsed_parts) == 1:
             # A "series" folder with exactly one real part is really just a
@@ -672,20 +744,24 @@ def main() -> None:
                 "date": only["date"], "body": only["body"], "source": f"{d.name}/{only['source']}",
                 "images": series_images,
                 "category": only.get("category"), "tags": only.get("tags"),
+                "summary": only.get("summary"),
             })
             continue
 
         series_date = min(pp["date"] for pp in parsed_parts)
         # The series as a whole is shown as one card on the blog homepage,
-        # not one per part, so it needs one category/tag set - taken from
-        # whichever part defines it first, in part order (typically Part 1).
+        # not one per part, so it needs one category/tag/summary set - taken
+        # from whichever part defines it first, in part order (typically
+        # Part 1).
         series_category = next((pp["category"] for pp in parsed_parts if pp.get("category")), None)
         series_tags = next((pp["tags"] for pp in parsed_parts if pp.get("tags")), None)
+        series_summary = next((pp["summary"] for pp in parsed_parts if pp.get("summary")), None)
         top_entries.append({
             "kind": "series", "title": d.name, "slug": slugify(d.name),
             "date": series_date, "parts": parsed_parts, "source": d.name,
             "images": series_images,
             "category": series_category, "tags": series_tags,
+            "summary": series_summary,
         })
 
     top_entries.sort(key=lambda e: e["date"], reverse=True)
@@ -721,7 +797,8 @@ def main() -> None:
                     print(f"  removed stale nested folder {folder_name}/{child.name} (series collapsed to a single page)")
             body = process_body(e["body"], all_titles, e["images"], folder_path)
             (folder_path / "default.md").write_text(
-                frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags")) + body,
+                frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags"),
+                            summary=e.get("summary")) + body,
                 encoding="utf-8")
             write_markdown_download(folder_path, e["slug"], e["title"], e["body"])
             new_manifest[e["slug"]] = {"folder": folder_name, "source": e["source"]}
@@ -729,7 +806,8 @@ def main() -> None:
         else:
             index_body = "\n".join(f"- [{p['title']}]({p['slug']})" for p in e["parts"])
             (folder_path / "default.md").write_text(
-                frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags"))
+                frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags"),
+                            summary=e.get("summary"))
                 + "Parts in this series:\n\n" + index_body + "\n",
                 encoding="utf-8",
             )
@@ -741,7 +819,8 @@ def main() -> None:
                 part_folder.mkdir(parents=True, exist_ok=True)
                 body = process_body(p["body"], all_titles, e["images"], part_folder)
                 (part_folder / "default.md").write_text(
-                    frontmatter(p["title"], p["date"], category=p.get("category"), tags=p.get("tags")) + body,
+                    frontmatter(p["title"], p["date"], category=p.get("category"), tags=p.get("tags"),
+                                summary=p.get("summary")) + body,
                     encoding="utf-8")
                 write_markdown_download(part_folder, p["slug"], p["title"], p["body"])
                 print(f"  wrote {folder_name}/{part_folder.name}/default.md  <-  {e['source']}/{p['source']}")

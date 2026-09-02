@@ -2,6 +2,16 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.2.0] - 2026-09-02
+
+### Added
+- `publish_inbox.py`: optional `date:` YAML frontmatter field, an explicit override for a page's displayed date, verified against the article's real original publish date where one exists elsewhere (e.g. an older blog). Falls back to a Notion export's own `backed_up:` timestamp if present (closer to a real date than nothing), then to this script's own git first-commit-date as the last resort, unchanged from before.
+- `publish_inbox.py`: optional `summary:` YAML frontmatter field, a hand-written one-line excerpt written straight through into the generated page's own frontmatter (read back by a theme template as `page.header.summary`). Exists because Grav's own auto-computed `page.summary()` reads a page's *rendered* content by default, so a `[TOC]` widget rendering before any real prose leaked its own link text into any auto-generated summary.
+
+### Fixed
+- `publish_inbox.py`: every source file is now read with `encoding="utf-8-sig"` instead of plain `"utf-8"`, so a leading UTF-8 byte-order-mark (three bytes, EF BB BF, silently written by some tools, e.g. PowerShell's `Set-Content`/`Out-File` default to BOM'd UTF-8 unless told otherwise) no longer breaks frontmatter parsing. Previously, a BOM'd file's `---...---` block failed to match (the string starts with U+FEFF, not `-`) and fell through as literal, visible body text on the live page.
+- `publish_inbox.py`: fixed a double-escaping bug where a frontmatter value already containing an escaped apostrophe (`it''s`, YAML's own single-quote escape) got escaped a second time on every subsequent read-then-write pass, visibly leaking as a doubled apostrophe (`it''''s`) on the live page. `extract_frontmatter()` now properly unescapes a single-quoted value on read, instead of just trimming the outer quote characters.
+
 ## [1.1.0] - 2026-09-02
 
 ### Added
