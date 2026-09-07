@@ -89,7 +89,16 @@ def clean_vault(root: Path) -> bool:
     call this directly, the same pattern optimize_images.py already uses."""
     any_change = False
     for md_path in iter_md_files(root):
-        text = md_path.read_text(encoding="utf-8")
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # rglob() walks the tree lazily, so a file can be renamed (e.g.
+            # Obsidian mid-rename, LiveSync mid-sync) in the moment between
+            # being listed here and actually being read. Not our file to
+            # worry about anymore under its old name, just move on instead
+            # of crashing the whole publish over one transient miss.
+            print(f"  skipped {md_path.relative_to(root)} (renamed/removed mid-scan)")
+            continue
         new_text, changed = clean_text(text)
         if changed:
             md_path.write_text(new_text, encoding="utf-8")

@@ -2,6 +2,11 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.2.1] - 2026-09-07
+
+### Fixed
+- `clean_code_fences.py`: `clean_vault()` walks the tree with `rglob()`, which lists a file's path lazily and only reads it a moment later as the loop reaches it. If Obsidian renames a file (or LiveSync is still mid-sync) in that window, the read hit a bare `FileNotFoundError` and crashed the whole publish over one file that no longer existed under its old name. Now caught and skipped per-file with a note, instead of aborting the run.
+
 ## [1.2.0] - 2026-09-02
 
 ### Added
