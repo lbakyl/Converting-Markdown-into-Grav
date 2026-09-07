@@ -2,6 +2,11 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.2.2] - 2026-09-07
+
+### Fixed
+- `publish_inbox.py`: `part_sort_key()` only ever looked at a part's own filename for "Part N", never its containing folder. Once every part in a series gets renamed to the same generic filename (e.g. `index.md`, no "Part N" left to find), they all collapse to the same fallback sort key and end up ordered by whatever the filesystem happened to list them in, not the real part sequence - confirmed live, this scrambled a 4-part series' order (both the site's own "Parts in this series" list and the series' actual part-folder numbering). Now falls back to the parent folder's own name, which still says "Part N - <title>" even when the file inside doesn't.
+
 ## [1.2.1] - 2026-09-07
 
 ### Fixed

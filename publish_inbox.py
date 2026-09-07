@@ -377,9 +377,20 @@ def extract_frontmatter(content: str) -> tuple[dict, str]:
     return meta, content[m.end():]
 
 
-def part_sort_key(filename: str):
-    m = PART_NUM_RE.search(filename)
-    return (0, int(m.group(1))) if m else (1, filename.lower())
+def part_sort_key(path: Path):
+    m = PART_NUM_RE.search(path.name)
+    if not m:
+        # The .md file itself may have been renamed to something generic
+        # (e.g. "index.md") that no longer carries "Part N" - fall back to
+        # the containing folder's own name, which still does (folders are
+        # named "Part N - <title>" and don't get renamed the way a lone
+        # file inside might). Without this, every renamed part collapses
+        # to the same "no match" fallback key and sorts in whatever
+        # arbitrary order the filesystem happened to list them in, not
+        # the real part sequence - confirmed live, this scrambled a
+        # 4-part series' order once all four parts got renamed to index.md.
+        m = PART_NUM_RE.search(path.parent.name)
+    return (0, int(m.group(1))) if m else (1, path.name.lower())
 
 
 def find_images(search_root: Path) -> dict:
@@ -697,7 +708,7 @@ def main() -> None:
 
     for d in series_dirs:
         parts = sorted(
-            (p for p in d.rglob("*.md")), key=lambda p: part_sort_key(p.name)
+            (p for p in d.rglob("*.md")), key=part_sort_key
         )
         # only .md files directly under the series root or one level of
         # subfolders count as "parts" - an Attachments subfolder full of
