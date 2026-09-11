@@ -1,0 +1,90 @@
+/* Add these rules to the theme's own custom.css (or equivalent). They
+   assume a design system with CSS custom properties named --border-color,
+   --code-bg, --table-header-bg, --text-heading, --border-color-strong,
+   and --text-main, matching whatever dark/light theming already exists.
+   Replace those with plain color values, or the theme's own equivalent
+   tokens, if it has none. */
+
+/* GitHub file-embed widget (.gh-file-embed, from the [gh-file] shortcode,
+   see the gh-file-embed plugin plus custom.js.snippet.js's
+   initGhFileEmbeds()). Content is fetched client-side from GitHub, so
+   there's nothing to theme for "loading" vs "loaded" states beyond the
+   box itself; reuses the theme's own CSS custom properties so it follows
+   dark mode automatically. */
+.gh-file-embed {
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin: 1.5em 0;
+    overflow: hidden;
+    background: var(--code-bg);
+}
+.gh-file-embed-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5em 1em;
+    padding: 0.5em 1em;
+    background: var(--table-header-bg);
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.85em;
+}
+.gh-file-embed-path {
+    font-family: Consolas, "Courier New", monospace;
+    font-weight: 600;
+    color: var(--text-heading);
+    overflow-wrap: anywhere;
+}
+.gh-file-embed-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75em;
+    flex-shrink: 0;
+}
+.gh-file-embed-copy {
+    border: 1px solid var(--border-color-strong);
+    background: transparent;
+    color: var(--text-main);
+    border-radius: 3px;
+    padding: 0.15em 0.6em;
+    font-size: 0.9em;
+    line-height: 1.4;
+    cursor: pointer;
+}
+.gh-file-embed-copy:hover {
+    border-color: var(--text-muted);
+}
+.gh-file-embed-link {
+    white-space: nowrap;
+}
+.gh-file-embed-code {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    max-height: 22em;
+    overflow: auto;
+}
+.gh-file-embed-toggle {
+    display: block;
+    margin: 0.75em 1em 1em;
+}
+
+/* Mobile: let the header wrap ("Copy"/"View on GitHub" under the
+   filename) rather than squeezing everything onto one cramped row. */
+@media (max-width: 480px) {
+    .gh-file-embed-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+/* A generic .button-secondary (or equivalent) class that sets
+   display: inline-block with no :not([hidden]) guard will win over the
+   browser's own native [hidden]{display:none} rule, so the toggle button
+   renders as an empty box even when it should be invisible. Confirmed
+   directly via computed style, background matched the button class's own
+   color exactly, on a page where the toggle carried hidden="". Force it
+   explicitly instead of relying on the attribute alone. */
+.gh-file-embed-toggle[hidden] {
+    display: none !important;
+}

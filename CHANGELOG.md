@@ -2,6 +2,16 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.3.0] - 2026-09-11
+
+### Added
+- A new Grav plugin, `gh-file-embed`, adding a `[gh-file repo="owner/repo" path="path/to/file.yml"]` shortcode that embeds a live preview of a file from a public GitHub repo directly in a page, fetched client side, with an optional `lines="N"` preview and expand button. Not part of the publish pipeline itself, included under `grav-theme-extras/` since it was built and documented in the same session as the rest of this repo. See the new README section for the full write-up.
+
+### Fixed
+- A backup copy of the shortcode's own PHP file left inside `classes/shortcodes/` (the directory `shortcode-core` blindly `require_once`s every file from) caused a site-wide fatal error, "Cannot declare class ..., because the name is already in use." Backups now go outside any directory a plugin scans.
+- The theme's `.button-secondary` class overrides the browser's native `hidden` attribute behavior (no `:not([hidden])` guard on its `display: inline-block`), so the shortcode's "Show full file" button rendered as an empty box even when it had nothing to expand. Fixed with an explicit `.gh-file-embed-toggle[hidden] { display: none !important; }` rule.
+- Grav's `system.yaml` now sets `assets.enable_asset_timestamp: true`, so a CSS/JS deploy always gets a new URL instead of risking a CDN serving a stale cached copy of the old one past its own declared cache lifetime (observed directly: a stale hit 2301 seconds past a declared 1800 second max-age).
+
 ## [1.2.2] - 2026-09-07
 
 ### Fixed

@@ -1,0 +1,33 @@
+name: GitHub File Embed
+slug: gh-file-embed
+type: plugin
+version: 1.0.0
+description: "Adds a [gh-file] shortcode that previews a file straight from a public GitHub repo (fetched client-side), with an expand-to-full-file button and a View on GitHub link."
+icon: github
+author:
+  name: Jan Bachelor
+homepage: https://github.com/lbakyl/Converting-Markdown-into-Grav
+keywords: github, shortcode, embed, code
+license: MIT
+
+form:
+  validation: loose
+  fields:
+    enabled:
+      type: toggle
+      label: Plugin status
+      highlight: 1
+      default: 1
+      options:
+        1: Enabled
+        0: Disabled
+      validate:
+        type: bool
+    default_branch:
+      type: text
+      label: Default branch
+      default: main
+    default_lines:
+      type: text
+      label: Default preview line count
+      default: 50

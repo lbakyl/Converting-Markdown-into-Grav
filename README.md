@@ -221,3 +221,34 @@ It prints one line per page written, one line per stale page or part removed, an
 - Only `.md` files are ever converted into pages. Any other file type placed in a series folder (a script, a JSON blueprint, and so on) is silently ignored, it is neither a part nor an image, so the script has no rule for it. Link to such files from within the Markdown instead (a plain link to wherever they're actually hosted); the wikilink and image rewriting rules don't touch ordinary Markdown links, so they pass through untouched.
 - The manifest (`MANIFEST_PATH`) is what makes cleanup possible. Deleting it doesn't break anything on the next run, but it does mean the script loses track of what it previously created, so nothing gets cleaned up until the next rename or deletion happens naturally after that.
 - No file locking. Two overlapping runs (a very short interval combined with a very large batch) could in theory race on `PAGES_DIR`. Not a concern at the default 5-minute interval against a personal tutorial archive's content volume, worth knowing if this gets adapted for something with much heavier publishing throughput.
+
+---
+
+# Bonus: Grav theme extra, the `[gh-file]` shortcode
+
+A small Grav plugin plus two theme snippets that let a Markdown page embed a live preview of a file from a public GitHub repo, so a Semaphore/Ansible template that is really maintained in GitHub never needs a second, stale copy pasted into the vault.
+
+Source: [`grav-theme-extras/gh-file-embed/`](grav-theme-extras/gh-file-embed/). Not part of the publish pipeline itself, it is a Grav theme/plugin feature, not something `publish_inbox.py` touches, included here because it was built and documented alongside the rest of this repo and the same "why," not just "what," style applies.
+
+## What it does
+
+Write this in any page's Markdown:
+
+```text
+[gh-file repo="owner/repo" path="path/to/file.yml"]
+```
+
+and the live page renders a box with the file's name, a Copy button, a View on GitHub link, and the file's actual content, fetched straight from `raw.githubusercontent.com` in the visitor's own browser (public repos serve that endpoint with a permissive CORS header, so no server-side proxy is needed). Add `lines="N"` to show only the first N lines with a "Show full file" button underneath; leave it off and the whole file shows with no button at all, useful for a short snippet that is not worth collapsing. `branch` defaults to `main`, and `lang` (only affects the code block's CSS class, there is no syntax highlighter) is guessed from the file extension if left out.
+
+## How it is built
+
+- `gh-file-embed.php` and `blueprints.yaml`: a minimal Grav plugin, following the same pattern as this site's other small shortcode plugins (page-toc's own anchor shortcode, for one), registering the shortcode with the `shortcode-core` plugin already on the site.
+- `classes/shortcodes/GhFileShortcode.php`: the actual shortcode handler. Outputs a placeholder `<div>` with `data-repo`/`data-path`/`data-branch`/`data-lines` attributes and no content of its own, everything else happens client side.
+- `theme-snippets/custom.js.snippet.js`: the function that does the actual fetch, preview, and expand/collapse. Add it to the theme's own `custom.js` and call it alongside the theme's other init functions.
+- `theme-snippets/custom.css.snippet.css`: the widget's styling, reusing the theme's own CSS custom properties so it follows dark mode automatically without any extra work.
+
+## Gotchas hit building this
+
+- **A backup file inside the shortcode's own `classes/shortcodes/` folder crashed the whole site.** `shortcode-core`'s `registerAllShortcodes()` calls `require_once` on every file that directory contains, regardless of name or extension. A `GhFileShortcode.php.bak-<timestamp>` sitting next to the real file gets loaded too, and PHP fatals with "Cannot declare class ..., because the name is already in use." Keep backups of anything inside a scanned shortcode directory somewhere else entirely.
+- **The theme's own `.button-secondary` class silently defeats the `hidden` attribute.** It sets `display: inline-block` with no `:not([hidden])` guard, so a `<button class="button-secondary" hidden>` still renders, as an empty box, instead of staying hidden. A CSS rule targeting `.gh-file-embed-toggle[hidden]` directly with `!important` is what actually hides it; relying on the bare attribute is not enough on a page that also loads a stylesheet like this one.
+- **A CDN can keep serving a stale CSS/JS file well past its own declared cache lifetime.** Confirmed directly: a response still carried `cf-cache-status: HIT` at `Age: 2301` seconds against a declared `max-age=1800`. The durable fix is Grav's own `system.yaml` setting `assets.enable_asset_timestamp: true`, which appends each asset file's own modified time to its URL, so every deploy gets a brand new URL and a CDN can never serve an old copy of it again. Worth turning on for any Grav site sitting behind a CDN, not just for this feature.
