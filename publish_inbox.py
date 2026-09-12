@@ -138,6 +138,44 @@ def image_height(path: Path) -> int | None:
         return None
     return None
 
+
+def normalize_svg_dimensions(path: Path) -> None:
+    """Rewrites a copied SVG's root width/height to explicit pixel values
+    taken from its own viewBox, if either is missing or given as a
+    percentage - see IMAGE_REF_RE's neighbor comment above for why. A
+    no-op if the file already has both as absolute values, if its root
+    tag can't be found, or if it has no viewBox to fall back on (nothing
+    to derive a size from in that case, left untouched rather than
+    guessed at)."""
+    text = path.read_text(encoding="utf-8")
+    root_m = SVG_ROOT_TAG_RE.search(text)
+    if not root_m:
+        return
+    root_tag = root_m.group(0)
+    viewbox_m = SVG_VIEWBOX_RE.search(root_tag)
+    if not viewbox_m:
+        return
+    width, height = viewbox_m.group(1), viewbox_m.group(2)
+
+    width_m = re.search(r'\bwidth="([^"]*)"', root_tag, re.IGNORECASE)
+    needs_width = width_m is None or "%" in width_m.group(1)
+    if width_m and needs_width:
+        root_tag = root_tag[:width_m.start()] + f'width="{width}"' + root_tag[width_m.end():]
+    elif needs_width:
+        root_tag = root_tag.replace("<svg", f'<svg width="{width}"', 1)
+
+    height_m = re.search(r'\bheight="([^"]*)"', root_tag, re.IGNORECASE)
+    needs_height = height_m is None or "%" in height_m.group(1)
+    if height_m and needs_height:
+        root_tag = root_tag[:height_m.start()] + f'height="{height}"' + root_tag[height_m.end():]
+    elif needs_height:
+        root_tag = root_tag.replace("<svg", f'<svg height="{height}"', 1)
+
+    if not needs_width and not needs_height:
+        return
+    path.write_text(text[:root_m.start()] + root_tag + text[root_m.end():], encoding="utf-8")
+
+
 SOURCE_REPO = Path("/opt/grav_source/repo")
 PAGES_DIR = Path("/opt/grav/user/pages")
 MANIFEST_PATH = Path("/opt/grav/.publish_manifest.json")
@@ -185,6 +223,22 @@ IMAGE_REF_RE = re.compile(
     r"|!\[([^\]]*)\]\(([^)\s]+\.(?:png|jpe?g|gif|webp|svg))(?:\s+\"[^\"]*\")?\)",
     re.IGNORECASE,
 )
+# A diagram tool's SVG export (Mermaid's own "Export as SVG" included, the
+# case this was written for) commonly sets width="100%" and no height
+# attribute at all - correct for how the tool renders it inline in its own
+# page, meaningless once referenced as a standalone <img src=...> instead
+# (this pipeline's embedding model for every image, screenshots included):
+# a percentage width has no parent to be relative to, and no height leaves
+# nothing to derive an aspect ratio from. Confirmed live, both real bugs,
+# not just theoretical: the browser's generic fallback size (a near-square
+# diagram rendered as a tiny 150x150 square) inline, and a collapsed
+# 0-height image inside the theme's Featherlight lightbox popup. See
+# normalize_svg_dimensions() below, which rewrites both from the file's own
+# viewBox - the same source Grav's own VectorImageMedium reads its
+# dimensions from - so a diagram never needs its export fixed by hand
+# before it can be dropped in.
+SVG_ROOT_TAG_RE = re.compile(r"<svg\b[^>]*>", re.IGNORECASE)
+SVG_VIEWBOX_RE = re.compile(r'viewBox="[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)"', re.IGNORECASE)
 # Raw HTML <img> tags, optionally wrapped in a same-target <a> and/or a <p>
 # (the shape the sibling Notion-to-Gitea backup script emits for every image
 # it downloads: <p align="center"><a href="assets/x.png" target="_blank">
@@ -324,6 +378,18 @@ FRONTMATTER_BACKED_UP_RE = re.compile(r"^backed_up:[ \t]*(.+?)[ \t]*$", re.MULTI
 # card as the "summary" instead. A hand-written excerpt sidesteps that
 # entirely rather than fighting Grav's summary internals.
 FRONTMATTER_SUMMARY_RE = re.compile(r"^summary:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+# Old URLs (typically a pre-migration WordPress permalink, since its slug
+# convention doesn't always match this pipeline's own slugify()) that should
+# 301 to this page instead of 404ing. A leading slash is optional - either
+# way it's written out as Grav's own `routes: aliases:` frontmatter, which
+# registers the old path as a real alternate route for this same page,
+# without ever touching the page's own live slug (never assume the old
+# permalink can just be reasoned out from the current title - see the
+# "PVE 8.x" case this was added for, where a single-part series folder
+# named without the title's own punctuation quietly slugified differently
+# than the title itself would have).
+FRONTMATTER_REDIRECTS_INLINE_RE = re.compile(r"^redirects:[ \t]*\[(.*?)\][ \t]*$", re.MULTILINE)
+FRONTMATTER_REDIRECTS_BLOCK_RE = re.compile(r"^redirects:[ \t]*\n((?:[ \t]*-.*\n?)+)", re.MULTILINE)
 
 
 def unquote_yaml_scalar(raw: str) -> str:
@@ -350,15 +416,17 @@ def extract_frontmatter(content: str) -> tuple[dict, str]:
     Notion-imported note), used for a handful of fields this pipeline
     understands: `category` (one string), `tags` (a list, either inline
     `[a, b]` or a `- ` block), `summary` (one line, a hand-written excerpt
-    for the blog homepage card), and a page date, `date:` if explicitly
-    set (takes priority, meant for a real, verified publish date), else
-    `backed_up:` if present (a Notion-export timestamp, an imperfect but
-    real proxy already sitting in the note). A minimal hand-rolled parser
-    rather than a real YAML library, this script has no third-party
-    dependencies and these fields don't justify pulling one in. Anything
-    else in the block (Obsidian's own `aliases`, Notion's `source`/
-    `notion_id`, etc.) is silently ignored. No block present -> ({},
-    content) unchanged, this is entirely optional per article."""
+    for the blog homepage card), `redirects` (a list, same two shapes as
+    `tags`, of old URLs that should 301 to this page - see frontmatter()),
+    and a page date, `date:` if explicitly set (takes priority, meant for
+    a real, verified publish date), else `backed_up:` if present (a
+    Notion-export timestamp, an imperfect but real proxy already sitting
+    in the note). A minimal hand-rolled parser rather than a real YAML
+    library, this script has no third-party dependencies and these fields
+    don't justify pulling one in. Anything else in the block (Obsidian's
+    own `aliases`, Notion's `source`/`notion_id`, etc.) is silently
+    ignored. No block present -> ({}, content) unchanged, this is
+    entirely optional per article."""
     m = FRONTMATTER_RE.match(content)
     if not m:
         return {}, content
@@ -383,6 +451,13 @@ def extract_frontmatter(content: str) -> tuple[dict, str]:
     summary_m = FRONTMATTER_SUMMARY_RE.search(block)
     if summary_m:
         meta["summary"] = unquote_yaml_scalar(summary_m.group(1))
+    redirects_inline_m = FRONTMATTER_REDIRECTS_INLINE_RE.search(block)
+    if redirects_inline_m:
+        meta["redirects"] = [unquote_yaml_scalar(t) for t in redirects_inline_m.group(1).split(",") if t.strip()]
+    else:
+        redirects_block_m = FRONTMATTER_REDIRECTS_BLOCK_RE.search(block)
+        if redirects_block_m:
+            meta["redirects"] = [unquote_yaml_scalar(t) for t in FRONTMATTER_LIST_ITEM_RE.findall(redirects_block_m.group(1))]
     return meta, content[m.end():]
 
 
@@ -477,12 +552,24 @@ def process_body(text: str, slug_map: dict, image_map: dict, dest_folder: Path) 
         # See user/themes/learn2/css/custom.css for both classes.
         css_class = "thumb-large" if height is not None and height < SHORT_IMAGE_HEIGHT_THRESHOLD else "thumb-half"
         if src.suffix.lower() == ".svg":
-            # SVG is vector, not a raster screenshot - Grav has no way to
-            # rasterize a real thumbnail from it, so the lightbox action
-            # below just renders media.yaml's generic vector icon in place
-            # of the actual diagram on click, instead of the image itself.
-            # Confirmed live. Keep the same inline sizing class as every
-            # other image, but skip the lightbox action entirely.
+            normalize_svg_dimensions(dest_folder / src.name)
+            # SVG is vector, not a raster screenshot - Grav's own ?lightbox=
+            # action asks the medium for a raster "thumbnail" to display
+            # inside the resulting link, which for a vector image falls
+            # back to media.yaml's generic vector-file icon in place of the
+            # actual diagram, both inline AND inside the click-to-enlarge
+            # popup. Confirmed live. A hand-built <a rel="lightbox"> raw
+            # HTML anchor was tried instead of the lightbox action, to keep
+            # click-to-enlarge without the generic icon - also confirmed
+            # live, and reverted: it bypasses Grav's own Markdown image
+            # handling entirely, so its plain relative src/href fell back to
+            # the *browser's* normal relative-URL resolution instead of
+            # Grav's page-media-aware one, landing one directory too
+            # shallow for this page's nested route (see HTML_IMG_RE's
+            # neighbor comment above for the exact same failure mode) and
+            # breaking the image outright. Keep the same inline sizing
+            # class as every other image, but skip the lightbox action -
+            # no click-to-enlarge for a diagram, rather than a broken one.
             return f"![{alt}]({quote(src.name)}?classes={css_class})"
         # ?lightbox=3000,3000 is generously large rather than a real crop -
         # every screenshot handled so far is well under that, so this
@@ -661,7 +748,7 @@ def yaml_quote(s: str) -> str:
 def frontmatter(
     title: str, date: str, *, template: str | None = None,
     category: str | None = None, tags: list[str] | None = None,
-    summary: str | None = None,
+    summary: str | None = None, redirects: list[str] | None = None,
 ) -> str:
     """Builds the frontmatter block for an ordinary generated page. category
     and tags (both optional, from extract_frontmatter() above) become a
@@ -673,7 +760,18 @@ def frontmatter(
     (also optional) is a hand-written excerpt, written straight through as
     its own top-level frontmatter field (not Grav's own summary system),
     read back by blog.html.twig as entry.header.summary - see
-    extract_frontmatter() above for why page.summary() itself isn't used."""
+    extract_frontmatter() above for why page.summary() itself isn't used.
+    redirects (also optional, a list of old URLs) becomes Grav's own
+    `routes: aliases:` frontmatter - a built-in Grav feature, no plugin
+    needed, that registers each one as a real extra route rendering this
+    same page (200, not a 301, but that's enough to stop it 404ing), while
+    leaving the page's own live slug completely untouched. Added for a
+    single-part series whose folder name didn't carry the same punctuation
+    as its title (see part_sort_key()'s neighbor, the collapsed-single-part
+    branch in main() that slugifies the folder name, not the title) - its
+    live slug ended up different from what the title alone would slugify
+    to, which was still the address a pre-migration WordPress permalink
+    (and Google's own index of it) used."""
     lines = ["---", f"title: {yaml_quote(title)}", f"date: '{date}'", "visible: true"]
     if template:
         lines.append(f"template: {template}")
@@ -685,6 +783,9 @@ def frontmatter(
             lines.append(f"    category: [{yaml_quote(category)}]")
         if tags:
             lines.append(f"    tag: [{', '.join(yaml_quote(t) for t in tags)}]")
+    if redirects:
+        lines.append("routes:")
+        lines.append(f"    aliases: [{', '.join(yaml_quote(r) for r in redirects)}]")
     lines += ["process:", "    twig: false", "---", ""]
     return "\n".join(lines) + "\n"
 
@@ -720,7 +821,7 @@ def main() -> None:
             "date": meta.get("date") or first_commit_date(f), "body": body, "source": f.name,
             "images": find_images(f.parent),
             "category": meta.get("category"), "tags": meta.get("tags"),
-            "summary": meta.get("summary"),
+            "summary": meta.get("summary"), "redirects": meta.get("redirects"),
         })
 
     for d in series_dirs:
@@ -744,7 +845,7 @@ def main() -> None:
                 "title": title, "slug": slug, "body": body,
                 "date": meta.get("date") or first_commit_date(p), "source": p.name,
                 "category": meta.get("category"), "tags": meta.get("tags"),
-                "summary": meta.get("summary"),
+                "summary": meta.get("summary"), "redirects": meta.get("redirects"),
             })
         if len(parsed_parts) == 1:
             # A "series" folder with exactly one real part is really just a
@@ -772,7 +873,7 @@ def main() -> None:
                 "date": only["date"], "body": only["body"], "source": f"{d.name}/{only['source']}",
                 "images": series_images,
                 "category": only.get("category"), "tags": only.get("tags"),
-                "summary": only.get("summary"),
+                "summary": only.get("summary"), "redirects": only.get("redirects"),
             })
             continue
 
@@ -784,12 +885,13 @@ def main() -> None:
         series_category = next((pp["category"] for pp in parsed_parts if pp.get("category")), None)
         series_tags = next((pp["tags"] for pp in parsed_parts if pp.get("tags")), None)
         series_summary = next((pp["summary"] for pp in parsed_parts if pp.get("summary")), None)
+        series_redirects = next((pp["redirects"] for pp in parsed_parts if pp.get("redirects")), None)
         top_entries.append({
             "kind": "series", "title": d.name, "slug": slugify(d.name),
             "date": series_date, "parts": parsed_parts, "source": d.name,
             "images": series_images,
             "category": series_category, "tags": series_tags,
-            "summary": series_summary,
+            "summary": series_summary, "redirects": series_redirects,
         })
 
     top_entries.sort(key=lambda e: e["date"], reverse=True)
@@ -826,7 +928,7 @@ def main() -> None:
             body = process_body(e["body"], all_titles, e["images"], folder_path)
             (folder_path / "default.md").write_text(
                 frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags"),
-                            summary=e.get("summary")) + body,
+                            summary=e.get("summary"), redirects=e.get("redirects")) + body,
                 encoding="utf-8")
             write_markdown_download(folder_path, e["slug"], e["title"], e["body"])
             new_manifest[e["slug"]] = {"folder": folder_name, "source": e["source"]}
@@ -835,7 +937,7 @@ def main() -> None:
             index_body = "\n".join(f"- [{p['title']}]({p['slug']})" for p in e["parts"])
             (folder_path / "default.md").write_text(
                 frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags"),
-                            summary=e.get("summary"))
+                            summary=e.get("summary"), redirects=e.get("redirects"))
                 + "Parts in this series:\n\n" + index_body + "\n",
                 encoding="utf-8",
             )
@@ -848,7 +950,7 @@ def main() -> None:
                 body = process_body(p["body"], all_titles, e["images"], part_folder)
                 (part_folder / "default.md").write_text(
                     frontmatter(p["title"], p["date"], category=p.get("category"), tags=p.get("tags"),
-                                summary=p.get("summary")) + body,
+                                summary=p.get("summary"), redirects=p.get("redirects")) + body,
                     encoding="utf-8")
                 write_markdown_download(part_folder, p["slug"], p["title"], p["body"])
                 print(f"  wrote {folder_name}/{part_folder.name}/default.md  <-  {e['source']}/{p['source']}")

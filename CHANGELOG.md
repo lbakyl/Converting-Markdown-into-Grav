@@ -2,6 +2,14 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.4.0] - 2026-09-12
+
+### Added
+- `publish_inbox.py`: an optional `redirects:` frontmatter field (a list, same two shapes as `tags:`) of old URLs that should render this same page instead of 404ing, via Grav's own `routes: aliases:` (a 200, not a real 301, but enough to stop a dead link). Added after a pre-migration WordPress permalink was found live-broken: a single-part series' slug is deliberately taken from its *folder* name rather than its title (so a later title edit never changes an already-live URL), and here the folder name and title had drifted apart (`PVE 8x` vs `PVE 8.x`), leaving the site's own live slug one hyphen short of what the title, and the old WordPress permalink Google had indexed, would have produced.
+
+### Fixed
+- `publish_inbox.py`: an SVG exported at a percentage width with no height at all (common from diagramming tools built for their own inline, responsive use, Mermaid's own "Export as SVG" included) rendered at the browser's generic fallback size once embedded as a plain `<img>` instead, confirmed live on a real architecture diagram: a near-square image showed as a tiny 150x150 square inline, and collapsed to zero height entirely inside the theme's lightbox popup. Every copied `.svg` now has its root `width`/`height` rewritten to explicit pixel values taken from its own `viewBox`, so this fixes itself instead of requiring the source file to be hand-edited before it can be dropped in.
+
 ## [1.3.2] - 2026-09-12
 
 ### Fixed
