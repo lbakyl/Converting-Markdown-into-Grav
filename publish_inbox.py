@@ -476,6 +476,14 @@ def process_body(text: str, slug_map: dict, image_map: dict, dest_folder: Path) 
         height = image_height(src)
         # See user/themes/learn2/css/custom.css for both classes.
         css_class = "thumb-large" if height is not None and height < SHORT_IMAGE_HEIGHT_THRESHOLD else "thumb-half"
+        if src.suffix.lower() == ".svg":
+            # SVG is vector, not a raster screenshot - Grav has no way to
+            # rasterize a real thumbnail from it, so the lightbox action
+            # below just renders media.yaml's generic vector icon in place
+            # of the actual diagram on click, instead of the image itself.
+            # Confirmed live. Keep the same inline sizing class as every
+            # other image, but skip the lightbox action entirely.
+            return f"![{alt}]({quote(src.name)}?classes={css_class})"
         # ?lightbox=3000,3000 is generously large rather than a real crop -
         # every screenshot handled so far is well under that, so this
         # effectively just triggers Grav's built-in Featherlight popup at

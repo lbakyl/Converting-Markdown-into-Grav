@@ -2,6 +2,11 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.3.2] - 2026-09-12
+
+### Fixed
+- `publish_inbox.py`: every embedded image, SVG included, got the same `?classes=thumb-half&lightbox=3000,3000` treatment as a raster screenshot. Grav has no way to rasterize a thumbnail from an SVG, so wrapping one in the lightbox action rendered `media.yaml`'s generic vector-file icon in place of the actual diagram on click, confirmed live against a real architecture diagram. `.svg` files now keep the same inline sizing class but skip the lightbox action, so they display directly instead.
+
 ## [1.3.1] - 2026-09-12
 
 ### Fixed
