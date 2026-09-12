@@ -2,6 +2,11 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.3.1] - 2026-09-12
+
+### Fixed
+- `publish_inbox.py`: `PART_NUM_RE` only matched "part" followed by whitespace then a digit, so a slug-style series folder like `part-1-some-long-title` (hyphen, not whitespace, between "part" and the number) never matched at all. Both parts of a 2-part series fell through to the same fallback sort key and ended up in whatever arbitrary order the filesystem listed them, not the real part sequence - confirmed live, this displayed Part 2 before Part 1 with no error anywhere. Now accepts whitespace, `_`, or `-` between "part" and the digit.
+
 ## [1.3.0] - 2026-09-11
 
 ### Added

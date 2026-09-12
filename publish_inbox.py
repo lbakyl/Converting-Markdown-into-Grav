@@ -217,7 +217,16 @@ HTML_IMG_RE = re.compile(
 IMG_SRC_RE = re.compile(r'src="([^"]+)"', re.IGNORECASE)
 IMG_ALT_RE = re.compile(r'alt="([^"]*)"', re.IGNORECASE)
 WIKILINK_RE = re.compile(r"(?<!!)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
-PART_NUM_RE = re.compile(r"part\s*(\d+)", re.IGNORECASE)
+# `[\s_-]*` (not just `\s*`) between "part" and the digit - a slug-style
+# folder name like "part-1-some-long-title" uses a hyphen there, not
+# whitespace. Confirmed live: with a plain `\s*`, "part-1-..." and
+# "part-2-..." both silently fail to match at all, so both parts fall
+# through to the same (1, path.name.lower()) fallback bucket in
+# part_sort_key() below and sort in whatever arbitrary order the
+# filesystem happened to list them in - one 2-part series ended up with
+# Part 2 displayed before Part 1 on the live site because of exactly
+# this, with no error or warning anywhere.
+PART_NUM_RE = re.compile(r"part[\s_-]*(\d+)", re.IGNORECASE)
 # Obsidian's callout syntax: the opening line of a blockquote reads
 # "> [!type] optional title" (optionally followed directly by a fold
 # indicator, - or +, which Grav has no collapse behavior for and which this
