@@ -2,6 +2,11 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.5.0] - 2026-09-12
+
+### Added
+- `publish_inbox.py`: the generated homepage now carries a `content:` collection header (every top-level page, newest first) and `feed: skip: true`, and the generated search/about pages get `feed: skip: true` too. Together these are the only two things the community Feed plugin needs to serve a real RSS/Atom feed of every article, without the search/about listing pages themselves showing up as fake articles in it. The plugin itself isn't part of this repo (`bin/gpm install feed`), just the frontmatter that activates it.
+
 ## [1.4.0] - 2026-09-12
 
 ### Added

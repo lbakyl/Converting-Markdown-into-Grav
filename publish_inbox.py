@@ -618,7 +618,17 @@ def process_home_page(all_titles: dict) -> None:
     resets Grav's own default page unattended just because its source
     note isn't in this particular pull. Forced to template: blog - this
     page is the categorized blog homepage (blog.html.twig), Home.md only
-    ever supplies its title and any intro text above the listing."""
+    ever supplies its title and any intro text above the listing.
+
+    Also carries a `content:` collection block (every top-level page,
+    newest first) and `feed: skip: true`, together the only two things
+    the Feed plugin needs to serve a real RSS/Atom feed of every article
+    at this page's own route plus `.rss`/`.atom` - see its own README,
+    onPageInitialized() only activates itself for a page that already
+    defines `content:` in its header. `feed: skip: true` keeps the
+    listing itself (a "Home" entry with no article content of its own)
+    out of the feed it's providing, matching the same exclusion
+    blog.html.twig already applies when it lists article tiles."""
     home_path = SOURCE_REPO / HOME_FILENAME
     if not home_path.exists():
         return
@@ -630,8 +640,18 @@ def process_home_page(all_titles: dict) -> None:
     images = find_images(home_path.parent)
     body = process_body(body, all_titles, images, home_folder)
     date = first_commit_date(home_path)
+    feed_collection = (
+        "content:\n"
+        "    items: '@root.children'\n"
+        "    order:\n"
+        "        by: date\n"
+        "        dir: desc\n"
+        "feed:\n"
+        "    skip: true"
+    )
     (home_folder / "default.md").write_text(
-        frontmatter(title, date, template="blog") + body, encoding="utf-8")
+        frontmatter(title, date, template="blog", extra_yaml=feed_collection) + body,
+        encoding="utf-8")
     print(f"  wrote 01.home/default.md  <-  {home_path.name}")
 
 
@@ -659,6 +679,10 @@ def process_search_page(all_titles: dict) -> None:
         f"title: '{safe_title}'\n"
         f"menu: '{safe_title}'\n"
         "template: articles\n"
+        # Keeps this page (a listing, not an article) out of 01.home's own
+        # `content:`-driven RSS/Atom feed - see process_home_page().
+        "feed:\n"
+        "    skip: true\n"
         "---\n\n"
         f"{body}\n"
     )
@@ -685,8 +709,11 @@ def process_about_page(all_titles: dict) -> None:
     images = find_images(about_path.parent)
     body = process_body(body, all_titles, images, about_folder)
     date = first_commit_date(about_path)
+    # feed: skip: true keeps this page (a bio, not an article) out of
+    # 01.home's own content:-driven RSS/Atom feed - see process_home_page().
     (about_folder / "default.md").write_text(
-        frontmatter(title, date) + body, encoding="utf-8")
+        frontmatter(title, date, extra_yaml="feed:\n    skip: true") + body,
+        encoding="utf-8")
     print(f"  wrote 03.about/default.md  <-  {about_path.name}")
 
 
@@ -749,6 +776,7 @@ def frontmatter(
     title: str, date: str, *, template: str | None = None,
     category: str | None = None, tags: list[str] | None = None,
     summary: str | None = None, redirects: list[str] | None = None,
+    extra_yaml: str | None = None,
 ) -> str:
     """Builds the frontmatter block for an ordinary generated page. category
     and tags (both optional, from extract_frontmatter() above) become a
@@ -771,7 +799,11 @@ def frontmatter(
     branch in main() that slugifies the folder name, not the title) - its
     live slug ended up different from what the title alone would slugify
     to, which was still the address a pre-migration WordPress permalink
-    (and Google's own index of it) used."""
+    (and Google's own index of it) used. extra_yaml (also optional) is a
+    raw, already-indented YAML fragment appended as-is, for the rare
+    one-off frontmatter a single special page needs (see process_home_page()
+    below, the only current user) rather than growing this function's own
+    parameter list for something no ordinary article will ever set."""
     lines = ["---", f"title: {yaml_quote(title)}", f"date: '{date}'", "visible: true"]
     if template:
         lines.append(f"template: {template}")
@@ -786,6 +818,8 @@ def frontmatter(
     if redirects:
         lines.append("routes:")
         lines.append(f"    aliases: [{', '.join(yaml_quote(r) for r in redirects)}]")
+    if extra_yaml:
+        lines.append(extra_yaml.rstrip("\n"))
     lines += ["process:", "    twig: false", "---", ""]
     return "\n".join(lines) + "\n"
 
