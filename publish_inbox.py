@@ -95,6 +95,7 @@ folder - no extra nesting subfolder needed):
   this self-heals on the very next pull regardless of what actually
   changed that run.
 """
+import html
 import json
 import os
 import re
@@ -180,6 +181,22 @@ SOURCE_REPO = Path("/opt/grav_source/repo")
 PAGES_DIR = Path("/opt/grav/user/pages")
 MANIFEST_PATH = Path("/opt/grav/.publish_manifest.json")
 START_INDEX = 10  # leaves 01/02/03 free for Grav's own default pages
+
+
+def page_route(folder: Path) -> str:
+    """Absolute site route for a generated page folder, built the same way
+    Grav's own routing does: each ancestor directory's own name with its
+    leading "NN." order prefix stripped, joined by "/". Needed for the one
+    place that has to hand-build a correctly-routed absolute href/src
+    itself (image_repl()'s SVG branch, a raw HTML anchor that Grav's own
+    Markdown image resolution never sees, since it isn't Markdown syntax) -
+    a bare relative filename there fell back to the *browser's* own
+    relative-URL resolution instead, landing one directory too shallow on
+    any nested (series part) route. Confirmed live. Everywhere else on
+    this site, Grav's own Markdown link/image handling resolves correctly
+    on its own and this function isn't needed."""
+    parts = folder.relative_to(PAGES_DIR).parts
+    return "/" + "/".join(re.sub(r"^\d+\.", "", p) for p in parts)
 RESERVED_SLUGS = {"home", "typography", "search", "about"}
 IGNORED_TOP_LEVEL = {".git", ".gitignore", ".htaccess"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
@@ -223,6 +240,10 @@ IMAGE_REF_RE = re.compile(
     r"|!\[([^\]]*)\]\(([^)\s]+\.(?:png|jpe?g|gif|webp|svg))(?:\s+\"[^\"]*\")?\)",
     re.IGNORECASE,
 )
+# Obsidian's own resize-hint suffix (see image_repl()'s neighbor comment),
+# a trailing "|300" or "|300x200" appended to a standard Markdown image's
+# alt text whenever its embed gets resized in the editor.
+OBSIDIAN_RESIZE_SUFFIX_RE = re.compile(r"\|\d+(?:x\d+)?$")
 # A diagram tool's SVG export (Mermaid's own "Export as SVG" included, the
 # case this was written for) commonly sets width="100%" and no height
 # attribute at all - correct for how the tool renders it inline in its own
@@ -542,6 +563,17 @@ def process_body(text: str, slug_map: dict, image_map: dict, dest_folder: Path) 
         else:
             name = Path(unquote(m.group(3))).name
             alt = m.group(2) or name
+            # Obsidian's live preview silently rewrites a standard Markdown
+            # image's own alt text to append "|<width>" whenever the embed
+            # gets resized by dragging its corner in the editor, the same
+            # `|width` convention its own ![[wikilink]] syntax uses on
+            # purpose (and which IMAGE_REF_RE's first alternative already
+            # excludes structurally, for that syntax) - but here it lands
+            # inside what's meant to be a real, human-written description,
+            # confirmed live leaking into a real alt attribute, and liable
+            # to keep changing every time the image is casually resized in
+            # Obsidian again. Stripped rather than published verbatim.
+            alt = OBSIDIAN_RESIZE_SUFFIX_RE.sub("", alt)
 
         src = image_map.get(name)
         if src is None:
@@ -558,19 +590,28 @@ def process_body(text: str, slug_map: dict, image_map: dict, dest_folder: Path) 
             # inside the resulting link, which for a vector image falls
             # back to media.yaml's generic vector-file icon in place of the
             # actual diagram, both inline AND inside the click-to-enlarge
-            # popup. Confirmed live. A hand-built <a rel="lightbox"> raw
-            # HTML anchor was tried instead of the lightbox action, to keep
-            # click-to-enlarge without the generic icon - also confirmed
-            # live, and reverted: it bypasses Grav's own Markdown image
-            # handling entirely, so its plain relative src/href fell back to
-            # the *browser's* normal relative-URL resolution instead of
-            # Grav's page-media-aware one, landing one directory too
-            # shallow for this page's nested route (see HTML_IMG_RE's
-            # neighbor comment above for the exact same failure mode) and
-            # breaking the image outright. Keep the same inline sizing
-            # class as every other image, but skip the lightbox action -
-            # no click-to-enlarge for a diagram, rather than a broken one.
-            return f"![{alt}]({quote(src.name)}?classes={css_class})"
+            # popup. Confirmed live. Built by hand instead, as raw HTML
+            # rather than a Markdown image reference, so Grav's own media
+            # pipeline never touches it - only the theme's client-side
+            # Featherlight JS does (learn.js binds `a[rel="lightbox"]`),
+            # which just opens whatever href it's given with no
+            # thumbnailing of its own. Two things this needs to actually
+            # get right, both broke it the first time this was tried:
+            #   - href/src must be page_route()'s own absolute route, not
+            #     a bare filename - a bare one falls back to the
+            #     *browser's* relative-URL resolution instead of Grav's
+            #     page-media-aware one, landing one directory too shallow
+            #     on a nested (series part) route. Confirmed live.
+            #   - data-featherlight="image" is required: Featherlight's
+            #     own extension-sniffing regex doesn't include .svg, and
+            #     without this override it tries (and fails) to AJAX-load
+            #     the file as a page instead of showing it as a picture.
+            href = f"{page_route(dest_folder)}/{quote(src.name)}"
+            safe_alt = html.escape(alt, quote=True)
+            return (
+                f'<a rel="lightbox" data-featherlight="image" href="{href}">'
+                f'<img class="{css_class}" src="{href}" alt="{safe_alt}"></a>'
+            )
         # ?lightbox=3000,3000 is generously large rather than a real crop -
         # every screenshot handled so far is well under that, so this
         # effectively just triggers Grav's built-in Featherlight popup at

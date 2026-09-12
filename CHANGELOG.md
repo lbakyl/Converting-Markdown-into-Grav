@@ -2,6 +2,14 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.6.0] - 2026-09-12
+
+### Added
+- `publish_inbox.py`: an embedded SVG now gets the same lightbox click-to-enlarge as a raster screenshot, built as a hand-written raw HTML anchor (`rel="lightbox" data-featherlight="image"`) rather than through Grav's own image querystring action, which can't rasterize a real thumbnail from a vector image and would show a generic icon in the popup instead. Its `href`/`src` is computed as the page's own absolute route (a new `page_route()` helper, stripping each folder's leading `NN.` order prefix the same way Grav's routing does) rather than a bare filename - a bare filename resolves through the *browser's* relative-URL rules instead of Grav's page-media-aware ones, landing one directory too shallow on a nested (series part) route. Confirmed live, both the failure and the fix, on a real architecture diagram.
+
+### Fixed
+- `publish_inbox.py`: a standard Markdown image's alt text is now stripped of a trailing `|<width>` (or `|<width>x<height>`) suffix, Obsidian's own live preview silently appends this to the alt text whenever the embed is resized by dragging its corner, so what's meant to be a real, human-written description was leaking an internal pixel hint that changes every time the image is casually resized again. Confirmed live on the same diagram above.
+
 ## [1.5.0] - 2026-09-12
 
 ### Added
