@@ -817,7 +817,7 @@ def frontmatter(
     title: str, date: str, *, template: str | None = None,
     category: str | None = None, tags: list[str] | None = None,
     summary: str | None = None, redirects: list[str] | None = None,
-    extra_yaml: str | None = None,
+    comments: bool = False, extra_yaml: str | None = None,
 ) -> str:
     """Builds the frontmatter block for an ordinary generated page. category
     and tags (both optional, from extract_frontmatter() above) become a
@@ -840,11 +840,18 @@ def frontmatter(
     branch in main() that slugifies the folder name, not the title) - its
     live slug ended up different from what the title alone would slugify
     to, which was still the address a pre-migration WordPress permalink
-    (and Google's own index of it) used. extra_yaml (also optional) is a
-    raw, already-indented YAML fragment appended as-is, for the rare
-    one-off frontmatter a single special page needs (see process_home_page()
-    below, the only current user) rather than growing this function's own
-    parameter list for something no ordinary article will ever set."""
+    (and Google's own index of it) used. comments (also optional, default
+    off) becomes a plain `comments: true` field, the frontmatter switch
+    Comments Pro's own comments_section() Twig call checks before
+    rendering anything - set for every real article, left off for the
+    home/search/about special pages (see main()'s three "single"/"series"
+    call sites vs process_home_page()/process_search_page()/
+    process_about_page(), none of which pass it). extra_yaml (also
+    optional) is a raw, already-indented YAML fragment appended as-is,
+    for the rare one-off frontmatter a single special page needs (see
+    process_home_page() below, the only current user) rather than
+    growing this function's own parameter list for something no ordinary
+    article will ever set."""
     lines = ["---", f"title: {yaml_quote(title)}", f"date: '{date}'", "visible: true"]
     if template:
         lines.append(f"template: {template}")
@@ -859,6 +866,8 @@ def frontmatter(
     if redirects:
         lines.append("routes:")
         lines.append(f"    aliases: [{', '.join(yaml_quote(r) for r in redirects)}]")
+    if comments:
+        lines.append("comments: true")
     if extra_yaml:
         lines.append(extra_yaml.rstrip("\n"))
     lines += ["process:", "    twig: false", "---", ""]
@@ -1003,7 +1012,8 @@ def main() -> None:
             body = process_body(e["body"], all_titles, e["images"], folder_path)
             (folder_path / "default.md").write_text(
                 frontmatter(e["title"], e["date"], category=e.get("category"), tags=e.get("tags"),
-                            summary=e.get("summary"), redirects=e.get("redirects")) + body,
+                            summary=e.get("summary"), redirects=e.get("redirects"),
+                            comments=True) + body,
                 encoding="utf-8")
             write_markdown_download(folder_path, e["slug"], e["title"], e["body"])
             new_manifest[e["slug"]] = {"folder": folder_name, "source": e["source"]}
@@ -1025,7 +1035,8 @@ def main() -> None:
                 body = process_body(p["body"], all_titles, e["images"], part_folder)
                 (part_folder / "default.md").write_text(
                     frontmatter(p["title"], p["date"], category=p.get("category"), tags=p.get("tags"),
-                                summary=p.get("summary"), redirects=p.get("redirects")) + body,
+                                summary=p.get("summary"), redirects=p.get("redirects"),
+                                comments=True) + body,
                     encoding="utf-8")
                 write_markdown_download(part_folder, p["slug"], p["title"], p["body"])
                 print(f"  wrote {folder_name}/{part_folder.name}/default.md  <-  {e['source']}/{p['source']}")

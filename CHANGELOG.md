@@ -2,6 +2,11 @@
 
 All notable changes to this repo's scripts are recorded here. Versioning starts with this file, `v1.0.0` is a retroactive tag on the state the repo was already in before this file existed, not a claim that every change before it was individually documented.
 
+## [1.7.0] - 2026-09-13
+
+### Added
+- `publish_inbox.py`: every real article (a standalone page, or one of a series' own parts) now gets `comments: true` written into its frontmatter automatically - the one switch the community Comments Pro plugin (installed separately, not part of this repo) needs before it will render anything on that page. Left off a series' own overview page and the home/search/about special pages, matching the same set of pages the existing "More in category" and support-frame template blocks already exclude.
+
 ## [1.6.0] - 2026-09-12
 
 ### Added
